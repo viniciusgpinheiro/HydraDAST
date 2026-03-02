@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  # Alvo 1: OWASP Juice Shop (Moderno - Node/Angular)
+  juice-shop:
+    image: bkimminich/juice-shop
+    container_name: target_juice_shop
+    ports:
+      - "3000:3000"
+    networks:
+      - pentest_network
+
+  # Alvo 2: DVWA (Clássico - PHP/MySQL)
+  dvwa:
+    image: vulnerables/web-dvwa
+    container_name: target_dvwa
+    ports:
+      - "8080:80"
+    environment:
+      - DBMS_TYPE=MYSQL
+    networks:
+      - pentest_network
+
+networks:
+  pentest_network:
+    driver: bridge
