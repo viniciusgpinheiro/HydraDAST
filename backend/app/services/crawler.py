@@ -1,7 +1,41 @@
 import asyncio
 from playwright.async_api import async_playwright
-from models.WebInput import WebInput
-from models.ScanMappedData import ScanMappedData
+from pydantic import BaseModel
+from typing import List
+from typing import Optional
+
+
+class WebInput(BaseModel):
+    # Identificadores
+    html_name: Optional[str] = "unknown"
+    html_id: Optional[str] = "unknown"
+    html_class: Optional[str] = ""
+    
+    # Tipo e Conteúdo
+    type: str = "text"
+    value: Optional[str] = ""
+    placeholder: Optional[str] = ""
+    label_text: Optional[str] = ""
+    
+    # Metadados e Dicas
+    title: Optional[str] = ""
+    aria_label: Optional[str] = ""
+    
+    # Restrições
+    maxlength: Optional[str] = ""
+    minlength: Optional[str] = ""
+    required: bool = False
+    disabled: bool = False
+    
+    # Hierarquia 
+    parent_form_id: Optional[str] = ""
+    parent_form_action: Optional[str] = ""
+    parent_form_method: Optional[str] = "GET"
+
+
+class ScanMappedData(BaseModel):
+    url: str
+    inputs: List[WebInput]
 
 
 async def run_smart_crawler(target_url: str) -> ScanMappedData:
@@ -17,22 +51,30 @@ async def run_smart_crawler(target_url: str) -> ScanMappedData:
 
         # Busca todos os inputs, selects e textareas
         found_elements = await page.query_selector_all("input, select, textarea")
-        
         inputs_list = []
 
         for el in found_elements:
             # Extração de atributos para o NLP
-            name = await el.get_attribute("name")
-            id_attr = await el.get_attribute("id")
+
+            # Identificadores 
+            name = await el.get_attribute("name") or ""
+            id_attr = await el.get_attribute("id") or ""
+            class_attr = await el.get_attribute("class") or ""
+
+            # Tipo de conteudo 
             input_type = await el.get_attribute("type") or "text"
+            input_value = await el.get_attribute("value") or ""
             placeholder = await el.get_attribute("placeholder") or ""
-            
             # Tenta buscar o label associado (para contexto semântico)
             label_text = ""
             if id_attr:
                 label_el = await page.query_selector(f"label[for='{id_attr}']")
                 if label_el:
                     label_text = await label_el.inner_text()
+
+            # Metadados e Dicas
+            title = await el.get_attribute("title") or ""
+            aria_label = await el.get_attribute("aria_label") or "" #?
 
             # Cria o objeto Pydantic (Validação automática)
             input_data = WebInput(
@@ -51,5 +93,6 @@ async def run_smart_crawler(target_url: str) -> ScanMappedData:
 # Exemplo de execução (Para testar contra o seu Juice Shop no Docker)
 if __name__ == "__main__":
     url_vulneravel = "https://the-internet.herokuapp.com/login"
+    url_vulneravel = "https://leanpub.com/juice-shop"
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))
-    print(resultado.json(indent=2))
+print(resultado.model_dump_json(indent=2))
