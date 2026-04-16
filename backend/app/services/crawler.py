@@ -190,6 +190,6 @@ async def run_smart_crawler(target_url: str) -> ScanMappedData:
 # Exemplo de execução (Para testar contra o seu Juice Shop no Docker)
 if __name__ == "__main__":
     url_vulneravel = "https://the-internet.herokuapp.com/login"
-    url_vulneravel = "https://leanpub.com/juice-shop"
+    # url_vulneravel = "https://leanpub.com/juice-shop"
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))
-print(resultado.model_dump_json(indent=2))
+    print(resultado.model_dump_json(indent=2))

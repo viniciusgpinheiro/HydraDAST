@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import List
-from WebInput import WebInput
+from .web_input import WebInput
 
 class ScanMappedData(BaseModel):
     url: str
