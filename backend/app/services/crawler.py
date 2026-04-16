@@ -241,5 +241,7 @@ async def run_smart_crawler(target_url: str) -> ScanMappedData:
 
 if __name__ == "__main__":
     url_vulneravel = "https://quotes.toscrape.com/login"
+    # url_vulneravel = "https://the-internet.herokuapp.com/login"
+    # url_vulneravel = "https://leanpub.com/juice-shop"
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))
     print(resultado.model_dump_json(indent=2))

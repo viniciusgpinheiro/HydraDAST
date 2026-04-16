@@ -2,4 +2,7 @@ playwright
 pydantic
 sentence-transformers
 requests
+psycopg
+psycopg2-binary
+asyncpg
 python-dotenv

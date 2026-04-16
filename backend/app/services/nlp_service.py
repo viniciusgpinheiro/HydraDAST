@@ -1,6 +1,6 @@
-from sentences_transformers import SentenceTransformer
-from models.WebInput import WebInput
-from models.ScanMappedData import ScanMappedData
+from sentence_transformers import SentenceTransformer
+from models.web_input import WebInput
+from models.scan_mapped_data import ScanMappedData
 
 class NLPService:
     def __init__(self):
