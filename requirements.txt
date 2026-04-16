@@ -1,3 +1,5 @@
 playwright
 pydantic
 sentence-transformers
+requests
+python-dotenv
