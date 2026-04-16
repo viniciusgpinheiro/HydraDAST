@@ -145,6 +145,9 @@ def main() -> None:
             print(f"Usuário para teste: {id_usuario}")
 
             # Sempre cria um NOVO teste para a URL
+            if (cur.execute(f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", (url_vulneravel, id_usuario)) and cur.fetchone()):
+                raise RuntimeError(f"Já existe um teste para a URL {url_vulneravel} e usuário {id_usuario}. Por segurança, não vou criar outro igual.")
+            
             cur.execute(
                 f"""
                 INSERT INTO {tabela_teste} (id_usuario, url_alvo, linguagem, login_info, status)
