@@ -3,7 +3,8 @@ import re
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
-
+from models.web_input import WebInput
+from models.scan_mapped_data import ScanMappedData
 
 class WebInput(BaseModel):
     # Identificadores Básicos
@@ -55,6 +56,7 @@ class WebInput(BaseModel):
 class ScanMappedData(BaseModel):
     url: str
     inputs: List[WebInput]
+
 
 
 async def run_smart_crawler(target_url: str) -> ScanMappedData:
@@ -241,7 +243,7 @@ async def run_smart_crawler(target_url: str) -> ScanMappedData:
 
 
 if __name__ == "__main__":
-    url_vulneravel = "https://quotes.toscrape.com/login"
+    # url_vulneravel = "https://quotes.toscrape.com/login"
     # url_vulneravel = "https://the-internet.herokuapp.com/login"
     # url_vulneravel = "https://leanpub.com/juice-shop"
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))

