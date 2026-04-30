@@ -4,6 +4,7 @@ import os
 import re
 from dotenv import load_dotenv
 
+
 # Carrega o token do arquivo .env
 load_dotenv()
 TOKEN = os.getenv("Authorization")
@@ -22,7 +23,7 @@ PASTAS_ELITE = [
 
 headers = {
     "User-Agent": "HydraDAST-Project-Agent",
-    "Authorization": f"token {TOKEN}" 
+    "Authorization": f"token {TOKEN}"
 }
 
 def ler(url_api):
@@ -50,7 +51,7 @@ def ler(url_api):
                     # 1. Ignora comentários (#)
                     # 2. Ignora se a linha for só números (evita o lixo que você recebeu)
                     # 3. Ignora linhas muito curtas (menos de 3 caracteres) que não sejam payloads úteis
-                    if (payload and 
+                    if (payload and
                         not payload.startswith("#") and 
                         not payload.isdigit() and 
                         len(payload) > 2):
@@ -65,6 +66,7 @@ def ler(url_api):
             # if any(p in item["name"] for p in permitidas):
             print(f"\n📁 Entrando na subpasta: {item['name']}")
             ler(item["url"])
+
 
 # --- EXECUÇÃO ---
 

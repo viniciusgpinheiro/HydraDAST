@@ -1,4 +1,5 @@
 import asyncio
+import re
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
@@ -19,7 +20,7 @@ class WebInput(BaseModel):
     # Metadados e Acessibilidade (Foco em NLP)
     title: Optional[str] = ""
     aria_label: Optional[str] = ""
-    aria_describedby_text: Optional[str] = ""  
+    aria_describedby_text: Optional[str] = ""
     inner_text: Optional[str] = ""
     
     # Restrições
@@ -32,7 +33,7 @@ class WebInput(BaseModel):
     parent_form_id: Optional[str] = ""
     parent_form_action: Optional[str] = ""
     parent_form_method: Optional[str] = "GET"
-    fieldset_legend: Optional[str] = ""       
+    fieldset_legend: Optional[str] = ""
     
     tag_name: str = ""
     role: Optional[str] = ""
@@ -43,9 +44,9 @@ class WebInput(BaseModel):
     # Dados de Validação Técnica e Segurança (Foco em Pentest)
     pattern: Optional[str] = ""
     inputmode: Optional[str] = ""
-    data_attributes: Dict[str, str] = Field(default_factory=dict) 
-    inline_events: List[str] = Field(default_factory=list)        
-    framework_bindings: List[str] = Field(default_factory=list)   
+    data_attributes: Dict[str, str] = Field(default_factory=dict)
+    inline_events: List[str] = Field(default_factory=list)
+    framework_bindings: List[str] = Field(default_factory=list)
     
     # Opções para tags <select>
     options: List[str] = Field(default_factory=list)

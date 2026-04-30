@@ -2,13 +2,15 @@ import asyncio
 import os
 import re
 
+
+
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import Json
 
 from services.crawler import run_smart_crawler
 from services.nlp_service import NLPService
-
+from services.feedback_service import FeedbackService
 
 def _safe_ident(name: str) -> str:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
@@ -84,6 +86,7 @@ def main() -> None:
 
     # 2) Persistência no banco
     with psycopg2.connect(conn_string) as conn:
+        feedback_engine = FeedbackService(db_connection=conn)
         with conn.cursor() as cur:
             cur.execute("SELECT version();")
             version = cur.fetchone()
@@ -193,6 +196,21 @@ def main() -> None:
                     """,
                     (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
                 )
+                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, "SQL Injection")
+
+                if payload_alvo:
+                    print(f"\n[*] Campo: {input_original.html_name} | Tipo Sugerido: {classificacao}")
+                    print(f"    [Munição] Payload extraído do Neon: {payload_alvo}")
+
+                    status_simulado = 200
+                    html_simulado = "<html><body>Error: SQL syntax error near 'OR 1=1'</body></html>"
+
+                    resultado_analise = feedback_engine.analisar_resposta(status_simulado, html_simulado)
+
+                    score_obtido = feedback_engine.calcular_recompensa(resultado_analise)
+
+                    print(f"    [Feedback] Análise: {resultado_analise} | Recompensa: {score_obtido}")
+                
                 inseridos += 1
 
             conn.commit()
