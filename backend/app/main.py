@@ -9,6 +9,8 @@ from psycopg2.extras import Json
 from services.crawler import run_smart_crawler
 from services.nlp_service import NLPService
 
+from services.input_classifier import classificar_campo_hibrido
+
 
 def _safe_ident(name: str) -> str:
     if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name):
@@ -41,26 +43,6 @@ def _find_table_by_required_columns(cur, required_cols: set[str], schema: str = 
     )
 
 
-def _classificar_campo(input_obj) -> str:
-    texto = " ".join(
-        [
-            input_obj.html_name or "",
-            input_obj.html_id or "",
-            input_obj.label_text or "",
-            input_obj.placeholder or "",
-            input_obj.type or "",
-        ]
-    ).lower()
-
-    if any(chave in texto for chave in ["senha", "password"]):
-        return "credencial_senha"
-    if any(chave in texto for chave in ["email", "usuario", "username", "login"]):
-        return "credencial_identificador"
-    if any(chave in texto for chave in ["token", "api", "key"]):
-        return "segredo_api"
-    return "campo_generico"
-
-
 def _to_pgvector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(f"{float(x):.8f}" for x in embedding) + "]"
 
@@ -74,7 +56,6 @@ def main() -> None:
 
     url_vulneravel = "https://the-internet.herokuapp.com/login"
 
-    # 1) Crawler + NLP
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))
     nlp = NLPService()
     lista_com_vetores = nlp.process_page(resultado)
@@ -82,7 +63,6 @@ def main() -> None:
     for res in lista_com_vetores:
         print(f"Campo: {res['input_original'].html_name} -> Vetor de {len(res['embedding'])} posições.")
 
-    # 2) Persistência no banco
     with psycopg2.connect(conn_string) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version();")
@@ -126,7 +106,6 @@ def main() -> None:
                     raise RuntimeError(f"HYDRA_USER_ID não encontrado na tabela {tabela_usuario}: {usuario_existente_id}")
                 id_usuario = row[0]
             else:
-                # Cria/atualiza usuário e pega id
                 cur.execute(
                     f"""
                     INSERT INTO {tabela_usuario} (nome, email, senha_hash, chave_api, limite_requisicoes)
@@ -144,9 +123,12 @@ def main() -> None:
                 id_usuario = cur.fetchone()[0]
             print(f"Usuário para teste: {id_usuario}")
 
-            # Sempre cria um NOVO teste para a URL
-            if (cur.execute(f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", (url_vulneravel, id_usuario)) and cur.fetchone()):
-                raise RuntimeError(f"Já existe um teste para a URL {url_vulneravel} e usuário {id_usuario}. Por segurança, não vou criar outro igual.")
+            cur.execute(
+                f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", 
+                (url_vulneravel, id_usuario)
+            )
+            if cur.fetchone():
+                print(f"Aviso: O teste para {url_vulneravel} já existe. Continuando para fins de demonstração...")
             
             cur.execute(
                 f"""
@@ -163,8 +145,15 @@ def main() -> None:
             for res in lista_com_vetores:
                 input_original = res["input_original"]
                 embedding = res["embedding"]
-                classificacao = _classificar_campo(input_original)
                 embedding_literal = _to_pgvector_literal(embedding)
+                
+                # CHAMANDO A NOVA HEURÍSTICA HÍBRIDA
+                classificacao = classificar_campo_hibrido(
+                    cur=cur, 
+                    input_obj=input_original, 
+                    embedding_vetor=embedding, 
+                    tabela_nlp=tabela_resultado_nlp
+                )
 
                 conteudo_extraido = {
                     "html_name": input_original.html_name,
@@ -197,7 +186,6 @@ def main() -> None:
 
             conn.commit()
             print(f"Registros NLP inseridos: {inseridos}")
-
 
 if __name__ == "__main__":
     main()
