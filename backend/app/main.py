@@ -153,9 +153,9 @@ def main() -> None:
                 
                 # CHAMANDO A NOVA HEURÍSTICA HÍBRIDA
                 classificacao = classificar_campo_hibrido(
-                    cur=cur, 
-                    input_obj=input_original, 
-                    embedding_vetor=embedding, 
+                    cur=cur,
+                    input_obj=input_original,
+                    embedding_vetor=embedding,
                     tabela_nlp=tabela_resultado_nlp
                 )
 
@@ -186,8 +186,7 @@ def main() -> None:
                     """,
                     (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
                 )
-                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, "SQL Injection")
-
+                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, classificacao)
                 if payload_alvo:
                     print(f"\n[*] Campo: {input_original.html_name} | Tipo Sugerido: {classificacao}")
                     print(f"    [Munição] Payload extraído do Neon: {payload_alvo}")
