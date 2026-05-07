@@ -3,8 +3,6 @@ import os
 import re
 from dotenv import load_dotenv
 
-
-# Carrega o token do arquivo .env
 load_dotenv()
 TOKEN = os.getenv("Authorization")
 
@@ -109,19 +107,6 @@ def ler(url_api, permitir_recursao=True):
 
                 for linha in conteudo.splitlines():
                     payload = linha.strip()
-                    
-                    # --- FILTRO DE CONTEÚDO ---
-                    # 1. Ignora comentários (#)
-                    # 2. Ignora se a linha for só números (evita o lixo que você recebeu)
-                    # 3. Ignora linhas muito curtas (menos de 3 caracteres) que não sejam payloads úteis
-                    if (payload and
-                        not payload.startswith("#") and 
-                        not payload.isdigit() and 
-                        len(payload) > 2):
-                        ataques_list.append(payload)
-                        
-            except Exception as e:
-                print(f"      [!] Erro no arquivo {item['name']}: {e}")
                     if payload and not payload.startswith("#") and eh_payload_util(payload):
                         arsenal_dinamico[pasta_pai].append(payload)
             except:
@@ -131,7 +116,6 @@ def ler(url_api, permitir_recursao=True):
         elif item["type"] == "dir" and permitir_recursao:
             # Aqui evitamos entrar em pastas gigantes de nomes se estivermos na raiz do Fuzzing
             ler(item["url"], permitir_recursao=True)
-
 
 # --- EXECUÇÃO ---
 print("[*] Iniciando coleta seletiva...")
