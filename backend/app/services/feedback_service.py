@@ -6,27 +6,39 @@ class FeedbackService:
     def __init__(self, db_connection=None):
         self.conn = db_connection
 
-    def obter_payload_otimizado(self, vetor_nlp: List[float], tipo_ataque: str) -> Optional[str]:
-        """
-        Busca no Neon a munição mais próxima do contexto do campo (usando pgvector).
-        """
+    def obter_payload_otimizado(self, vetor_nlp: list[float], tipo_ataque: str) -> Optional[str]:
         if not self.conn:
             return None
             
         try:
             with self.conn.cursor() as cursor:
-                vetor_str = str(vetor_nlp)
+                # Limpa espaços em branco para garantir o match
+                tipo_ataque_limpo = tipo_ataque.strip()
                 
-                query = """
-                SELECT payload
-                FROM public.cache_payloads
-                WHERE tipo_ataque = %s
-                ORDER BY embedding_semantico <=> %s
+                # Converter a lista de floats para o formato que o PostgreSQL espera: [0.1, 0.2, ...]
+                vetor_formatado = "[" + ",".join(map(str, vetor_nlp)) + "]"
+                
+                # TENTATIVA 1: Busca por Similaridade Vetorial + Categoria
+                query_ia = """
+                SELECT payload 
+                FROM public.cache_payloads 
+                WHERE tipo_ataque = %s 
+                ORDER BY embedding_semantico <=> %s::vector 
                 LIMIT 1;
                 """
-                cursor.execute(query, (tipo_ataque, vetor_str))
-                resultado = cursor.fetchone()
-                return resultado[0] if resultado else None
+                cursor.execute(query_ia, (tipo_ataque_limpo, vetor_formatado))
+                res = cursor.fetchone()
+                
+                if res and res[0]:
+                    return res[0]
+                
+                # TENTATIVA 2: Busca apenas por Categoria (Caso o vetor falhe)
+                query_fallback = "SELECT payload FROM public.cache_payloads WHERE tipo_ataque = %s LIMIT 1;"
+                cursor.execute(query_fallback, (tipo_ataque_limpo,))
+                res = cursor.fetchone()
+                
+                return res[0] if res else None
+                
         except Exception as e:
             print(f"[!] Erro ao buscar payload no Neon: {e}")
             return None

@@ -72,6 +72,10 @@ def main() -> None:
             cur.execute("SELECT version();")
             version = cur.fetchone()
             print(f"Conectado ao banco de dados: {version[0]}")
+            # TESTE RÁPIDO DE CONEXÃO COM A TABELA
+            cur.execute("SELECT COUNT(*) FROM public.cache_payloads;")
+            total = cur.fetchone()[0]
+            print(f"[DEBUG] Total de payloads na tabela cache_payloads: {total}")
 
             tabela_usuario = _find_table_by_required_columns(
                 cur,
@@ -93,57 +97,57 @@ def main() -> None:
             tabela_teste = _safe_ident(tabela_teste)
             tabela_resultado_nlp = _safe_ident(tabela_resultado_nlp)
 
-            nome_usuario = os.getenv("HYDRA_USER_NOME", "Usuário Teste Hydra")
-            email_usuario = os.getenv("HYDRA_USER_EMAIL", "teste.hydradast@example.com")
-            senha_hash = os.getenv("HYDRA_USER_SENHA_HASH", "hash_temporario_substituir")
-            chave_api = os.getenv("HYDRA_USER_API_KEY", "")
-            limite_requisicoes = int(os.getenv("HYDRA_USER_LIMITE", "100"))
-            usuario_existente_id = os.getenv("HYDRA_USER_ID")
+            # nome_usuario = os.getenv("HYDRA_USER_NOME", "Usuário Teste Hydra")
+            # email_usuario = os.getenv("HYDRA_USER_EMAIL", "teste.hydradast@example.com")
+            # senha_hash = os.getenv("HYDRA_USER_SENHA_HASH", "hash_temporario_substituir")
+            # chave_api = os.getenv("HYDRA_USER_API_KEY", "")
+            # limite_requisicoes = int(os.getenv("HYDRA_USER_LIMITE", "100"))
+            # usuario_existente_id = os.getenv("HYDRA_USER_ID")
 
-            if usuario_existente_id:
-                cur.execute(
-                    f"SELECT id FROM {tabela_usuario} WHERE id = %s",
-                    (usuario_existente_id,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    raise RuntimeError(f"HYDRA_USER_ID não encontrado na tabela {tabela_usuario}: {usuario_existente_id}")
-                id_usuario = row[0]
-            else:
-                cur.execute(
-                    f"""
-                    INSERT INTO {tabela_usuario} (nome, email, senha_hash, chave_api, limite_requisicoes)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (email)
-                    DO UPDATE SET
-                        nome = EXCLUDED.nome,
-                        senha_hash = EXCLUDED.senha_hash,
-                        chave_api = EXCLUDED.chave_api,
-                        limite_requisicoes = EXCLUDED.limite_requisicoes
-                    RETURNING id
-                    """,
-                    (nome_usuario, email_usuario, senha_hash, chave_api, limite_requisicoes),
-                )
-                id_usuario = cur.fetchone()[0]
-            print(f"Usuário para teste: {id_usuario}")
+            # if usuario_existente_id:
+            #     cur.execute(
+            #         f"SELECT id FROM {tabela_usuario} WHERE id = %s",
+            #         (usuario_existente_id,),
+            #     )
+            #     row = cur.fetchone()
+            #     if not row:
+            #         raise RuntimeError(f"HYDRA_USER_ID não encontrado na tabela {tabela_usuario}: {usuario_existente_id}")
+            #     id_usuario = row[0]
+            # else:
+            #     cur.execute(
+            #         f"""
+            #         INSERT INTO {tabela_usuario} (nome, email, senha_hash, chave_api, limite_requisicoes)
+            #         VALUES (%s, %s, %s, %s, %s)
+            #         ON CONFLICT (email)
+            #         DO UPDATE SET
+            #             nome = EXCLUDED.nome,
+            #             senha_hash = EXCLUDED.senha_hash,
+            #             chave_api = EXCLUDED.chave_api,
+            #             limite_requisicoes = EXCLUDED.limite_requisicoes
+            #         RETURNING id
+            #         """,
+            #         (nome_usuario, email_usuario, senha_hash, chave_api, limite_requisicoes),
+            #     )
+            #     id_usuario = cur.fetchone()[0]
+            # print(f"Usuário para teste: {id_usuario}")
 
-            cur.execute(
-                f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", 
-                (url_vulneravel, id_usuario)
-            )
-            if cur.fetchone():
-                print(f"Aviso: O teste para {url_vulneravel} já existe. Continuando para fins de demonstração...")
+            # cur.execute(
+            #     f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", 
+            #     (url_vulneravel, id_usuario)
+            # )
+            # if cur.fetchone():
+            #     print(f"Aviso: O teste para {url_vulneravel} já existe. Continuando para fins de demonstração...")
             
-            cur.execute(
-                f"""
-                INSERT INTO {tabela_teste} (id_usuario, url_alvo, linguagem, login_info, status)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (id_usuario, url_vulneravel, "pt-BR", Json({}), "processado"),
-            )
-            id_teste = cur.fetchone()[0]
-            print(f"Novo teste criado: {id_teste}")
+            # cur.execute(
+            #     f"""
+            #     INSERT INTO {tabela_teste} (id_usuario, url_alvo, linguagem, login_info, status)
+            #     VALUES (%s, %s, %s, %s, %s)
+            #     RETURNING id
+            #     """,
+            #     (id_usuario, url_vulneravel, "pt-BR", Json({}), "processado"),
+            # )
+            # id_teste = cur.fetchone()[0]
+            # print(f"Novo teste criado: {id_teste}")
 
             inseridos = 0
             for res in lista_com_vetores:
@@ -153,42 +157,45 @@ def main() -> None:
                 
                 # CHAMANDO A NOVA HEURÍSTICA HÍBRIDA
                 classificacao = classificar_campo_hibrido(
-                    cur=cur, 
-                    input_obj=input_original, 
-                    embedding_vetor=embedding, 
+                    cur=cur,
+                    input_obj=input_original,
+                    embedding_vetor=embedding,
                     tabela_nlp=tabela_resultado_nlp
                 )
 
-                conteudo_extraido = {
-                    "html_name": input_original.html_name,
-                    "html_id": input_original.html_id,
-                    "html_class": input_original.html_class,
-                    "type": input_original.type,
-                    "value": input_original.value,
-                    "placeholder": input_original.placeholder,
-                    "label_text": input_original.label_text,
-                    "title": input_original.title,
-                    "aria_label": input_original.aria_label,
-                    "maxlength": input_original.maxlength,
-                    "minlength": input_original.minlength,
-                    "required": input_original.required,
-                    "disabled": input_original.disabled,
-                    "parent_form_id": input_original.parent_form_id,
-                    "parent_form_action": input_original.parent_form_action,
-                    "parent_form_method": input_original.parent_form_method,
-                }
+                # conteudo_extraido = {
+                #     "html_name": input_original.html_name,
+                #     "html_id": input_original.html_id,
+                #     "html_class": input_original.html_class,
+                #     "type": input_original.type,
+                #     "value": input_original.value,
+                #     "placeholder": input_original.placeholder,
+                #     "label_text": input_original.label_text,
+                #     "title": input_original.title,
+                #     "aria_label": input_original.aria_label,
+                #     "maxlength": input_original.maxlength,
+                #     "minlength": input_original.minlength,
+                #     "required": input_original.required,
+                #     "disabled": input_original.disabled,
+                #     "parent_form_id": input_original.parent_form_id,
+                #     "parent_form_action": input_original.parent_form_action,
+                #     "parent_form_method": input_original.parent_form_method,
+                # }
 
-                cur.execute(
-                    f"""
-                    INSERT INTO {tabela_resultado_nlp}
-                    (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
-                    VALUES (%s, %s, %s::vector, %s)
-                    """,
-                    (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
-                )
-                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, "SQL Injection")
-
+                # cur.execute(
+                #     f"""
+                #     INSERT INTO {tabela_resultado_nlp}
+                #     (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
+                #     VALUES (%s, %s, %s::vector, %s)
+                #     """,
+                #     (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
+                # )
+                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, classificacao)
                 if payload_alvo:
+                    print(f"\n[TESTE DE BUSCA VETORIAL]")
+                    print(f"|> Campo Detectado: {input_original.html_name}")
+                    print(f"|> Classificação IA: {classificacao}")
+                    print(f"|> Payload Retornado: {payload_alvo}") # <--- ESTE É O PRINT
                     print(f"\n[*] Campo: {input_original.html_name} | Tipo Sugerido: {classificacao}")
                     print(f"    [Munição] Payload extraído do Neon: {payload_alvo}")
 
@@ -200,6 +207,8 @@ def main() -> None:
                     score_obtido = feedback_engine.calcular_recompensa(resultado_analise)
 
                     print(f"    [Feedback] Análise: {resultado_analise} | Recompensa: {score_obtido}")
+                else:
+                    print(f"\n[!] Aviso: Nenhum payload encontrado para o campo {input_original.html_name} com a categoria {classificacao}")
                 
                 inseridos += 1
 
