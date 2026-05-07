@@ -5,10 +5,7 @@ def classificar_campo_hibrido(cur, input_obj, embedding_vetor, tabela_nlp, thres
     Tenta classificar usando o banco de dados (pgvector).
     Se não encontrar similaridade suficiente, usa uma heurística baseada em regras focada em DAST.
     """
-    
-    # ==========================================
-    # 1. TENTATIVA COM INTELIGÊNCIA (PGVECTOR)
-    # ==========================================
+
     vetor_str = "[" + ",".join(map(str, embedding_vetor)) + "]"
     
     query = f"""
@@ -26,10 +23,6 @@ def classificar_campo_hibrido(cur, input_obj, embedding_vetor, tabela_nlp, thres
     if result and result[1] > threshold:
         return result[0]
         
-    # ==========================================
-    # 2. FALLBACK: HEURÍSTICA DE PENTEST (DAST)
-    # ==========================================
-    # Extrai todo o contexto possível para a heurística
     texto = " ".join([
         input_obj.html_name or "",
         input_obj.html_id or "",
@@ -38,30 +31,28 @@ def classificar_campo_hibrido(cur, input_obj, embedding_vetor, tabela_nlp, thres
         input_obj.type or "",
         input_obj.parent_form_action or ""
     ]).lower()
-
-    # Regras de Classificação Expandidas para o TCC:
     
-    # 2.1. Credenciais e Autenticação
+    # Credenciais e Autenticação
     if any(chave in texto for chave in ["senha", "password", "pwd", "pass"]):
         return "credencial_senha"
     if any(chave in texto for chave in ["email", "usuario", "username", "login", "user"]):
         return "credencial_identificador"
         
-    # 2.2. Campos de Busca (Alvos clássicos de XSS e SQLi)
+    # Campos de Busca (Alvos clássicos de XSS e SQLi)
     if any(chave in texto for chave in ["busca", "search", "pesquisa", "query", "q"]):
         return "busca_pesquisa"
         
-    # 2.3. Campos de Texto Longo (Alvos de Stored XSS e HTML Injection)
+    # Campos de Texto Longo (Alvos de Stored XSS e HTML Injection)
     if any(chave in texto for chave in ["mensagem", "message", "comentario", "comment", "descricao", "body"]):
         return "contato_mensagem"
         
-    # 2.4. Vazamento ou Injeção em APIs
+    # Vazamento ou Injeção em APIs
     if any(chave in texto for chave in ["token", "api", "key", "secret"]):
         return "segredo_api"
         
-    # 2.5. Identificadores do Sistema (Alvos de IDOR / BOLA)
+    # Identificadores do Sistema (Alvos de IDOR / BOLA)
     if input_obj.type == "hidden" or any(chave in texto for chave in ["id", "uuid", "codigo", "code"]):
         return "identificador_oculto"
 
-    # 2.6. Se nada der match
+    # Se nada der match
     return "campo_generico"
