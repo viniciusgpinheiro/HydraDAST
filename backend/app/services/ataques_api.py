@@ -2,14 +2,25 @@ import requests
 import os
 import re
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor 
+from threading import Lock 
+
 
 load_dotenv()
 TOKEN = os.getenv("Authorization")
 
+arsenal_lock = Lock()
 arsenal_dinamico = {}
 
+session = requests.Session()
+headers = {
+    "User-Agent": "HydraDAST-Project-Agent",
+    "Authorization": f"token {TOKEN}" if TOKEN else ""
+}
+session.headers.update(headers)
+
 # Configuramos onde queremos recursão total e onde queremos apenas a "superfície"
-CONFIG_COLETA = {
+CATEGORIAS_SECLIST = {
     "Fuzzing/Databases": True,
     "Fuzzing/XSS": True,
     "Fuzzing/LFI": True,
@@ -17,10 +28,14 @@ CONFIG_COLETA = {
     "Fuzzing/SSRF": True,
     "Fuzzing": False  # False = Pega arquivos da pasta, mas NÃO entra nas subpastas
 }
-
-headers = {
-    "User-Agent": "HydraDAST-Project-Agent",
-    "Authorization": f"token {TOKEN}" if TOKEN else ""
+CATEGORIAS_PATT = {
+    "NoSQL Injection/Intruder": True,
+    "Server Side Template Injection/Intruder": True,
+    "SSRF Injection/Intruder": True,
+    "Command Injection/Intruder": True,
+    "SQL Injection/Intruder": True,
+    "File Inclusion/Intruder": True,
+    "XSS Injection/Intruder": True
 }
 
 # 1. LISTA NEGRA (Ruído absoluto: Dicionários, versões, datas, extensões puras)
@@ -50,91 +65,118 @@ ATTACK_PATTERNS = re.compile(
     r")", re.IGNORECASE
 )
 
+
+
 def eh_payload_util(payload):
     payload = payload.strip()
     tamanho = len(payload)
     
-    # 1. Filtro de Tamanho Ajustado
-    # Aumentado para 1000 para não perder Polyglots e WAF Bypasses codificados
     if tamanho < 2 or tamanho > 1000: 
         return False
 
-    # 2. Filtro Rápido de Ruído (Blacklist)
-    # Se bater aqui, descartamos imediatamente. Economiza processamento.
     if NOISE_PATTERNS.match(payload):
         return False
 
-    # 3. Match de Assinaturas Específicas (Whitelist)
-    # Se tem a assinatura de um ataque conhecido, é aprovado.
     if ATTACK_PATTERNS.search(payload):
         return True
 
-    # 4. Heurística de Densidade (O "Pulo do Gato" Otimizado)
-    # Em vez de re.findall (lento), usamos geradores nativos do Python (muito rápido)
     letras_e_numeros = sum(1 for char in payload if char.isalnum() or char.isspace())
     simbolos = tamanho - letras_e_numeros
     
     if tamanho > 0:
         taxa_simbolos = simbolos / tamanho
-        # Ajustado para 25%. Payloads modernos usam muita ofuscação (!@#$).
         if taxa_simbolos > 0.25: 
             return True
 
     return False
 
 
-def ler(url_api, permitir_recursao=True):
-    response = requests.get(url_api, headers=headers)
-    if response.status_code != 200: return
 
-    dados = response.json()
-    if isinstance(dados, dict): dados = [dados]
+def processar_arquivo(item):
+    try:
+        partes = item["path"].split("/")
+        pasta_pai = partes[-2] if len(partes) > 1 else "Raiz"
 
-    for item in dados:
-        # Se for ARQUIVO: Baixa e filtra
-        if item["type"] == "file" and item["name"].endswith(".txt"):
-            partes = item["path"].split('/')
-            # Se estiver na raiz do Fuzzing, a pasta pai é 'Fuzzing'
-            # Se estiver em subpasta, pega o nome dela
-            pasta_pai = partes[-2] if len(partes) > 1 else "Raiz"
-            
-            print(f"  [+] Coletando: {item['name']} (Categoria: {pasta_pai})")
-            
-            try:
-                conteudo = requests.get(item["download_url"], headers=headers).text 
-                if pasta_pai not in arsenal_dinamico:
-                    arsenal_dinamico[pasta_pai] = []
+        if pasta_pai == "Fuzzing":
+            nome_limpo = item["name"].replace(".txt", "")
+            pasta_pai = re.sub(r'[^a-zA-Z0-9_-]', '_', nome_limpo)
+        
+        if pasta_pai == "Intruder":
+            pasta_pai = partes[-3] if len(partes) > 2 else pasta_pai
 
-                for linha in conteudo.splitlines():
-                    payload = linha.strip()
-                    if payload and not payload.startswith("#") and eh_payload_util(payload):
-                        arsenal_dinamico[pasta_pai].append(payload)
-            except:
-                continue
+        conteudo = session.get(item["download_url"]).text
 
-        # Se for DIRETÓRIO: Só entra se a recursão for permitida para este caminho
-        elif item["type"] == "dir" and permitir_recursao:
-            # Aqui evitamos entrar em pastas gigantes de nomes se estivermos na raiz do Fuzzing
-            ler(item["url"], permitir_recursao=True)
+        payloads_filtrados = []
+        for linha in conteudo.splitlines():
+            payload = linha.strip()
+            if payload and not payload.startswith("#") and eh_payload_util(payload):
+                payloads_filtrados.append(payload)
+
+        with arsenal_lock:
+            if pasta_pai not in arsenal_dinamico:
+                arsenal_dinamico[pasta_pai] = []
+            arsenal_dinamico[pasta_pai].extend(payloads_filtrados)
+
+        print(f"  [✔] Processado: {item['name']} -> {pasta_pai}")
+
+    except Exception as e:
+        print(f"  [!] Erro ao processar {item['name']}: {e}")
+
+
+
+def buscar_arquivos(url, recursao=True):
+    arquivos_encontrados = []
+    try:
+        response = session.get(url)
+        if response.status_code != 200: return []
+
+        dados = response.json()
+        if isinstance(dados, dict): dados = [dados]
+
+        for item in dados:
+            if item["type"] == "file" and item["name"].endswith(".txt"):
+                arquivos_encontrados.append(item)
+
+            elif item["type"] == "dir" and recursao:
+                arquivos_encontrados.extend(buscar_arquivos(item["url"], True))
+
+    except Exception as e:
+        print(f"  [!] Erro na busca: {e}")
+    
+    return arquivos_encontrados
+
+
 
 # --- EXECUÇÃO ---
-print("[*] Iniciando coleta seletiva...")
+if __name__ == "__main__":
+    print("[*] Mapeando arquivos nos repositórios...")
+    
+    todos_arquivos = []
+    for path, recursivo in CATEGORIAS_SECLIST.items():
+        url_alvo = f"https://api.github.com/repositories/3482588/contents/{path}"
+        todos_arquivos.extend(buscar_arquivos(url_alvo, recursao=recursivo))
+    for path, recursivo in CATEGORIAS_PATT.items():
+        url_alvo = f"https://api.github.com/repos/SwisskyRepo/PayloadsAllTheThings/contents/{path}"
+        todos_arquivos.extend(buscar_arquivos(url_alvo, recursao=recursivo))
+    
 
-for path, recursivo in CONFIG_COLETA.items():
-    print(f"\n📂 Processando: {path} (Recursivo: {recursivo})")
-    url_alvo = f"https://api.github.com/repositories/3482588/contents/{path}"
-    # Chamamos a função passando se ela deve ou não entrar em subpastas
-    ler(url_alvo, permitir_recursao=recursivo)
+    print(f"[*] Total de arquivos para processar: {len(todos_arquivos)}")
+    print("[*] Iniciando download paralelo (Max 15 workers)...")
 
-# --- SALVAMENTO ---
-output_dir = "../data/arsenal_inteligente"
-if not os.path.exists(output_dir): os.makedirs(output_dir)
+    # Dispara múltiplas threads para baixar e filtrar os arquivos ao mesmo tempo
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        executor.map(processar_arquivo, todos_arquivos)
 
-for pasta, payloads in arsenal_dinamico.items():
-    if payloads:
-        payloads_unicos = sorted(list(set(payloads)))
-        nome_final = f"{output_dir}/{pasta}.txt"
-        with open(nome_final, "w", encoding="utf-8") as f:
-            for p in payloads_unicos:
-                f.write(f"{p}\n")
-        print(f"  [✔] {nome_final} ({len(payloads_unicos)} payloads)")
+    # --- SALVAMENTO (Mantido o original com melhoria no nome) ---
+    output_dir = "../data/arsenal_inteligente"
+    if not os.path.exists(output_dir): os.makedirs(output_dir)
+
+    for pasta, payloads in arsenal_dinamico.items():
+        if payloads:
+            payloads_unicos = sorted(list(set(payloads)))
+            nome_final = f"{output_dir}/{pasta}.txt"
+            with open(nome_final, "w", encoding="utf-8") as f:
+                for p in payloads_unicos:
+                    f.write(f"{p}\n")
+            print(f"  [Finalizado] {nome_final} ({len(payloads_unicos)} payloads)")
+    

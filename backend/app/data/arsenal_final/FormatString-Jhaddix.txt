@@ -1,0 +1,36 @@
+%#0123456x%08x%x%s%p%d%n%o%u%c%h%l%q%j%z%Z%t%i%e%g%f%a%C%S%08x%%
+%% * 129
+%% * 257
+%% * 513
+%% * 55
+%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%
+%%20d
+%%20n
+%%20s
+%%20x
+%.2049d
+%d * 55
+%d%d%d%d
+%d%d%d%d%d%d%d%d%d%d
+%n * 55
+%n%n%n%n
+%n%n%n%n%n%n%n%n%n%n
+%p * 55
+%p%p%p%p
+%p%p%p%p%p%p%p%p%p%p
+%s * 55
+%s%p%x%d
+%s%p%x%d * 129
+%s%p%x%d * 257
+%s%p%x%d * 513
+%s%p%x%d * 55
+%s%p%x%d%s%p%x%d%s%p%x%d
+%s%s%s%s
+%s%s%s%s%s%s%s%s%s%s
+%u * 55
+%u%u%u%u
+%u%u%u%u%u%u%u%u%u%u
+%x * 55
+%x%x%x%x
+%x%x%x%x%x%x%x%x%x%x
