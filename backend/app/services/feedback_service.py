@@ -9,38 +9,32 @@ class FeedbackService:
     def obter_payload_otimizado(self, vetor_nlp: list[float], tipo_ataque: str) -> Optional[str]:
         if not self.conn:
             return None
-            
         try:
             with self.conn.cursor() as cursor:
-                # Limpa espaços em branco para garantir o match
-                tipo_ataque_limpo = tipo_ataque.strip()
+                # Limpamos a entrada do Python
+                categoria_limpa = tipo_ataque.strip().lower()
                 
-                # Converter a lista de floats para o formato que o PostgreSQL espera: [0.1, 0.2, ...]
-                vetor_formatado = "[" + ",".join(map(str, vetor_nlp)) + "]"
-                
-                # TENTATIVA 1: Busca por Similaridade Vetorial + Categoria
-                query_ia = """
-                SELECT payload 
-                FROM public.cache_payloads 
-                WHERE tipo_ataque = %s 
-                ORDER BY embedding_semantico <=> %s::vector 
+                # Query "Inteligente": Tenta bater a categoria (ignorando case)
+                # e ordena pelo vetor. Se o vetor for de zeros, ele pega o primeiro que achar da categoria.
+                query = """
+                SELECT payload
+                FROM public.cache_payloads
+                WHERE LOWER(tipo_ataque) = %s
+                ORDER BY embedding_semantico <=> %s::vector
                 LIMIT 1;
                 """
-                cursor.execute(query_ia, (tipo_ataque_limpo, vetor_formatado))
-                res = cursor.fetchone()
                 
-                if res and res[0]:
-                    return res[0]
+                # Convertemos a lista de floats para o formato string [0.1, 0.2...] que o pgvector entende
+                vetor_str = "[" + ",".join(map(str, vetor_nlp)) + "]"
                 
-                # TENTATIVA 2: Busca apenas por Categoria (Caso o vetor falhe)
-                query_fallback = "SELECT payload FROM public.cache_payloads WHERE tipo_ataque = %s LIMIT 1;"
-                cursor.execute(query_fallback, (tipo_ataque_limpo,))
-                res = cursor.fetchone()
+                cursor.execute(query, (categoria_limpa, vetor_str))
+                resultado = cursor.fetchone()
                 
-                return res[0] if res else None
-                
+                if resultado:
+                    return resultado[0]
+                return None
         except Exception as e:
-            print(f"[!] Erro ao buscar payload no Neon: {e}")
+            print(f"[!] Erro na busca do payload: {e}")
             return None
 
     def analisar_resposta(self, status_code: int, html_content: str) -> str:
