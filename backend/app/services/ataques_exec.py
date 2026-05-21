@@ -1,190 +1,166 @@
-import os
-import random
-from typing import Iterable, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
-
 import requests
-
-BASE_DIR = os.path.dirname(__file__)
-ARSENAL_DIR = os.path.abspath(os.path.join(BASE_DIR, "../data/arsenal_final"))
-
-# Mapeamento de categorias para arquivos do arsenal_final
-ATTACK_CATEGORY_FILES: Dict[str, List[str]] = {
-    "sql_injection": ["SQL_Injection_Master.txt"],
-    "xss": ["XSS_Master.txt"],
-    "template_injection": ["Template_Injection_Master.txt"],
-    "command_injection": ["Command_Injection_Master.txt"],
-    "lfi_path_traversal": ["LFI_PathTraversal_Master.txt"],
-    "nosql_injection": ["NoSQL_Master.txt"],
-    "xxe": ["XXE-Fuzzing.txt", "XML-FUZZ.txt"],
-    "ssi": ["SSI-Injection-Jhaddix.txt"],
-    "login_bypass": ["login_bypass.txt"],
-    "polyglot": ["Polyglots.txt"],
-    "generic_fuzz": ["big-list-of-naughty-strings.txt"],
-}
-
-# Mapeamento do tipo de campo (classificação do NLP) para categorias de ataque
-CLASSIFICATION_TO_CATEGORIES: Dict[str, List[str]] = {
-    "credencial_senha": ["login_bypass", "sql_injection"],
-    "credencial_identificador": ["login_bypass", "sql_injection"],
-    "busca_pesquisa": ["sql_injection", "xss"],
-    "contato_mensagem": ["xss", "template_injection"],
-    "segredo_api": ["nosql_injection", "sql_injection"],
-    "identificador_oculto": ["sql_injection", "generic_fuzz"],
-    "campo_generico": ["generic_fuzz", "xss"],
-}
-
-_payload_cache: Dict[str, List[str]] = {}
+import json
 
 
-def _read_payloads_from_file(file_name: str) -> List[str]:
-    if file_name in _payload_cache:
-        return _payload_cache[file_name]
+def _requisicao_generica(payload, url, metodo, usar_json=False):
 
-    file_path = os.path.join(ARSENAL_DIR, file_name)
-    if not os.path.exists(file_path):
-        _payload_cache[file_name] = []
-        return []
-
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        payloads = [line.strip() for line in f.readlines() if line.strip()]
-
-    _payload_cache[file_name] = payloads
-    return payloads
-
-
-def load_payloads_by_category(category: str) -> List[str]:
-    files = ATTACK_CATEGORY_FILES.get(category, [])
-    payloads: List[str] = []
-    for file_name in files:
-        payloads.extend(_read_payloads_from_file(file_name))
-    return payloads
-
-
-def pick_payloads_for_classification(
-    classification: str,
-    max_payloads: int = 30,
-    seed: Optional[int] = None,
-) -> Dict[str, List[str]]:
-    categories = CLASSIFICATION_TO_CATEGORIES.get(classification, ["generic_fuzz"])
-    rng = random.Random(seed)
-    selection: Dict[str, List[str]] = {}
-
-    for category in categories:
-        payloads = load_payloads_by_category(category)
-        if not payloads:
-            selection[category] = []
-            continue
-        if len(payloads) <= max_payloads:
-            selection[category] = payloads
-        else:
-            selection[category] = rng.sample(payloads, max_payloads)
-
-    return selection
-
-
-def build_attack_plan(
-    target_url: str,
-    form_action: str,
-    form_method: str,
-    parameter: str,
-    classification: str,
-    max_payloads: int = 30,
-    seed: Optional[int] = None,
-) -> Dict[str, Iterable[str]]:
-    endpoint = urljoin(target_url, form_action or target_url)
-    payloads_by_category = pick_payloads_for_classification(
-        classification=classification,
-        max_payloads=max_payloads,
-        seed=seed,
-    )
-    return {
-        "endpoint": endpoint,
-        "method": (form_method or "GET").upper(),
-        "parameter": parameter,
-        "payloads_by_category": payloads_by_category,
+    metodo = metodo.upper()
+    headers = {
+        "User-Agent": "Mozilla/5.0",
     }
+    
+    if metodo in ["POST", "PUT"]:
+        if usar_json:
+            headers["Content-Type"] = "application/json"
+        else:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    try:
+        if metodo == "GET":      
+            resposta = requests.get(url, params=payload, headers=headers)     
+        elif metodo == "POST": 
+            if usar_json:
+                resposta = requests.post(url, json=payload, headers=headers)
+            else:
+                resposta = requests.post(url, data=payload, headers=headers)
+        elif metodo == "PUT":  
+            if usar_json:
+                resposta = requests.put(url, json=payload, headers=headers)
+            else:
+                resposta = requests.put(url, data=payload, headers=headers)
+        else: 
+            return None
+
+        try:
+            corpo_formatado = resposta.json()
+        except ValueError:
+            corpo_formatado = resposta.text
+
+        return {
+            "status_code": resposta.status_code,
+            "status_texto": resposta.reason,
+            "url_final": resposta.url,
+            "tempo_resposta_segundos": resposta.elapsed.total_seconds(),
+            "headers_resposta": dict(resposta.headers),
+            "cookies_resposta": requests.utils.dict_from_cookiejar(resposta.cookies),
+            "corpo": corpo_formatado,
+            "redirecionamentos": [res.url for res in resposta.history],
+            "requisicao_enviada": {
+                "metodo": resposta.request.method,
+                "url_origem": url,
+                "headers_enviados": dict(resposta.request.headers),
+                "corpo_enviado": resposta.request.body.decode('utf-8') if resposta.request.body else None
+            }
+        }
+    except requests.exceptions.RequestException as e:
+        return {"erro": True, "mensagem": f"Falha de rede: {e}"}
 
 
-def _is_target_allowed(target_url: str, allowlist: Iterable[str]) -> bool:
-    parsed = urlparse(target_url)
-    hostname = parsed.hostname or ""
-    return hostname in set(allowlist)
+def execute_sql_injection(payload, url, metodo):
+    """Processa validações de estruturas SQL/NoSQL enviadas tanto via Body quanto Query."""
+    return _requisicao_generica(payload, url, metodo, usar_json=False)
+
+def execute_command_injection(payload, url, metodo):
+    """Executa testes baseados em inputs de sistema operacional (Normalmente em Body)."""
+    return _requisicao_generica(payload, url, metodo, usar_json=False)
+
+def execute_file_inclusion_and_extensions(payload, url, metodo):
+    """Gerencia mutações de caminhos (Path) ou parâmetros de consulta."""
+    return _requisicao_generica(payload, url, metodo, usar_json=False)
+
+def execute_client_side_xss(payload, url, metodo):
+    """Valida reflexão de tags diretamente nos parâmetros recebidos da URL ou campos de entrada."""
+    return _requisicao_generica(payload, url, metodo, usar_json=False)
+
+def execute_server_side_injection(payload, url, metodo):
+    """Utiliza estruturas de dados estritas como JSON/XML devido à natureza das engines (ex: Jinja2, SOAP)."""
+    return _requisicao_generica(payload, url, metodo, usar_json=True)
+
+def execute_generic_fuzzing(payload, url, metodo):
+    """Dispara sequências amplas de caracteres especiais em múltiplos formatos."""
+    return _requisicao_generica(payload, url, metodo, usar_json=False)
 
 
-def execute_plan(
-    plan: Dict[str, Iterable[str]],
-    allowlist_domains: Iterable[str],
-    timeout: int = 8,
-    dry_run: bool = True,
-    headers: Optional[Dict[str, str]] = None,
-) -> List[Dict[str, str]]:
-    if not _is_target_allowed(plan["endpoint"], allowlist_domains):
-        raise RuntimeError("Alvo não está na allowlist. Abortando execução.")
-
-    results = []
-    request_headers = {"User-Agent": "HydraDAST-Project-Agent"}
-    if headers:
-        request_headers.update(headers)
-
-    method = plan["method"]
-    parameter = plan["parameter"]
-
-    def _build_request_payload(category: str, payload: str) -> Dict[str, Dict[str, str]]:
-        if category == "xss":
-            # Para XSS refletido em headers, injeta no header (ex: User-Agent)
-            injected_headers = dict(request_headers)
-            injected_headers["X-HydraDAST-XSS"] = payload
-            return {"headers": injected_headers, "params": {}, "data": {}}
-
-        # Padrão: payload vai no parâmetro do input (query/body)
-        return {"headers": request_headers, "params": {parameter: payload}, "data": {parameter: payload}}
-
-    for category, payloads in plan["payloads_by_category"].items():
-        for payload in payloads:
-            if dry_run:
-                results.append({
-                    "category": category,
-                    "payload": payload,
-                    "status": "DRY_RUN",
-                })
-                continue
-
-            try:
-                req = _build_request_payload(category, payload)
-                if method == "GET":
-                    response = requests.get(
-                        plan["endpoint"],
-                        params=req["params"],
-                        headers=req["headers"],
-                        timeout=timeout,
-                    )
-                else:
-                    response = requests.post(
-                        plan["endpoint"],
-                        data=req["data"],
-                        headers=req["headers"],
-                        timeout=timeout,
-                    )
-
-                results.append({
-                    "category": category,
-                    "payload": payload,
-                    "status": str(response.status_code),
-                })
-            except Exception as exc:
-                results.append({
-                    "category": category,
-                    "payload": payload,
-                    "status": f"ERROR: {exc}",
-                })
-
-    return results
+ATTACK_CLASSIFICATION = {
+    # --- Banco de Dados e Autenticação (SQL / NoSQL) ---
+    "SQL Injection.txt": execute_sql_injection,
+    "SQLi.txt": execute_sql_injection,
+    "NoSQL Injection.txt": execute_sql_injection,
+    "Databases.txt": execute_sql_injection,
+    "login_bypass.txt": execute_sql_injection,
+    
+    # --- Injeção de Comandos de Sistema (OS) ---
+    "Command Injection.txt": execute_command_injection,
+    "command-injection-commix.txt": execute_command_injection,
+    "UnixAttacks_fuzzdb.txt": execute_command_injection,
+    "Linux.txt": execute_command_injection,
+    "Windows-Attacks_fuzzdb.txt": execute_command_injection,
+    "Windows.txt": execute_command_injection,
+    
+    # --- Inclusão de Arquivos e Uploads ---
+    "LFI.txt": execute_file_inclusion_and_extensions,
+    "file-extensions.txt": execute_file_inclusion_and_extensions,
+    "extensions-Bo0oM.txt": execute_file_inclusion_and_extensions,
+    "file-extensions-all-cases.txt": execute_file_inclusion_and_extensions,
+    "file-extensions-lower-case.txt": execute_file_inclusion_and_extensions,
+    "file-extensions-upper-case.txt": execute_file_inclusion_and_extensions,
+    
+    # --- Vulnerabilidades Client-Side (XSS / HTML) ---
+    "HTML5sec-Injections-Jhaddix.txt": execute_client_side_xss,
+    "URI-XSS_fuzzdb.txt": execute_client_side_xss,
+    "Polyglots.txt": execute_client_side_xss,
+    
+    # --- Injeções Estruturadas e Lógicas de Servidor ---
+    "FormatString-Jhaddix.txt": execute_server_side_injection,
+    "template-engines-expression.txt": execute_server_side_injection,
+    "template-engines-special-vars.txt": execute_server_side_injection,
+    "XML-FUZZ.txt": execute_server_side_injection,
+    "XXE-Fuzzing.txt": execute_server_side_injection,
+    "LDAP_Fuzzing.txt": execute_server_side_injection,
+    "SSI-Injection-Jhaddix.txt": execute_server_side_injection,
+    
+    # --- Fuzzing Geral, Codificação e Strings Complexas ---
+    "big-list-of-naughty-strings.txt": execute_generic_fuzzing,
+    "JSON_Fuzzing.txt": execute_generic_fuzzing,
+    "special-chars___urlencoded.txt": execute_generic_fuzzing,
+    "URI-hex.txt": execute_generic_fuzzing,
+    "fuzz-Bo0oM-friendly.txt": execute_generic_fuzzing,
+    "fuzz-Bo0oM.txt": execute_generic_fuzzing,
+    "FuzzingStrings-SkullSecurity_org.txt": execute_generic_fuzzing,
+    "Unicode.txt": execute_generic_fuzzing,
+    "fully-qualified-java-classes.txt": execute_generic_fuzzing,
+    "robot-friendly.txt": execute_generic_fuzzing,
+    "human-friendly.txt": execute_generic_fuzzing,
+}
 
 
-__all__ = [
-    "load_payloads_by_category",
-    "pick_payloads_for_classification",
-    "build_attack_plan",
-    "execute_plan",
-]
+ENTRY_POINT_MAPPING = {
+    "body": [
+        "SQL Injection.txt", "SQLi.txt", "NoSQL Injection.txt", "Databases.txt", 
+        "login_bypass.txt", "Command Injection.txt", "command-injection-commix.txt", 
+        "XML-FUZZ.txt", "XXE-Fuzzing.txt", "JSON_Fuzzing.txt"
+    ],
+    "query": [
+        "URI-XSS_fuzzdb.txt", "URI-hex.txt", "template-engines-expression.txt", 
+        "template-engines-special-vars.txt", "LDAP_Fuzzing.txt", "FormatString-Jhaddix.txt"
+    ],
+    "path_or_upload": [
+        "LFI.txt", "file-extensions.txt", "extensions-Bo0oM.txt", 
+        "file-extensions-all-cases.txt", "file-extensions-lower-case.txt", 
+        "file-extensions-upper-case.txt"
+    ],
+    "any_input_or_headers": [
+        "big-list-of-naughty-strings.txt", "special-chars___urlencoded.txt", 
+        "fuzz-Bo0oM-friendly.txt", "fuzz-Bo0oM.txt", "FuzzingStrings-SkullSecurity_org.txt", 
+        "Unicode.txt", "Polyglots.txt", "HTML5sec-Injections-Jhaddix.txt"
+    ]
+}
+
+
+if __name__ == "__main__":
+    url = "https://the-internet.herokuapp.com/authenticate"
+    metodo = "POST"
+    payload = {"username": "tomsmith", "password": "SuperSecretPassword!"}
+
+    resposta = execute_sql_injection(payload, url, metodo)
+    print(json.dumps(resposta, indent=4, ensure_ascii=False))
