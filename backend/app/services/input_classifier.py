@@ -1,4 +1,14 @@
-# Arquivo: services/classifier.py
+import asyncio
+import os
+import re
+
+from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import Json
+
+from services.crawler import run_smart_crawler
+from services.nlp_service import NLPService
+from services.feedback_service import FeedbackService
 
 def classificar_campo_hibrido(cur, input_obj, embedding_vetor, tabela_nlp, threshold=0.7) -> str:
     """
