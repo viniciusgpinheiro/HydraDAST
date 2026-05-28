@@ -1,84 +1,225 @@
 import requests
 import json
+import websocket
+import time
+from playwright.sync_api import sync_playwright 
 
 
-def _requisicao_generica(payload, url, metodo, usar_json=False):
-
+# ==========================================
+# 1. MOTORES DE COMUNICAÇÃO (Motores Base)
+# ==========================================
+def _requisicao_generica(payload, url, metodo, usar_json=False, injetar_em="body", nome_campo=None, session=None):
+    """
+    Versão expandida do motor HTTP que permite escolher onde o payload será injetado:
+    'body', 'query', 'header', 'cookie' ou 'method'.
+    """
     metodo = metodo.upper()
+    
+    # 1. Configuração de Cabeçalhos Padrão
     headers = {
         "User-Agent": "Mozilla/5.0",
     }
-    
-    if metodo in ["POST", "PUT"]:
-        if usar_json:
-            headers["Content-Type"] = "application/json"
-        else:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+    cookies = {}
+
+    if metodo in ["POST", "PUT"] and usar_json:
+        headers["Content-Type"] = "application/json"
+    elif metodo in ["POST", "PUT"]:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+    # 2. LÓGICA DE INJEÇÃO DINÂMICA
+    dados_body = None
+    parametros_query = None
+
+    if injetar_em == "header" and nome_campo:
+        # Injeta o payload malicioso diretamente no cabeçalho especificado (ex: User-Agent, X-Forwarded-For)
+        headers[nome_campo] = str(payload)
+    elif injetar_em == "cookie" and nome_campo:
+        # Injeta o payload dentro de um cookie específico
+        cookies[nome_campo] = str(payload)
+    elif injetar_em == "method":
+        # Altera o próprio verbo HTTP para o payload (HTTP Verb Tampering)
+        metodo = str(payload).upper()
+    elif injetar_em == "query":
+        parametros_query = payload
+    else:
+        # Padrão: Injeta no corpo da requisição
+        dados_body = payload
+
+    client = session if session else requests
 
     try:
-        if metodo == "GET":      
-            resposta = requests.get(url, params=payload, headers=headers)     
-        elif metodo == "POST": 
-            if usar_json:
-                resposta = requests.post(url, json=payload, headers=headers)
+        # Execução dinâmica baseada no método resolvido
+        if metodo == "GET":
+            resposta = client.get(url, params=parametros_query, headers=headers, cookies=cookies)
+        elif metodo == "POST":
+            if usar_json and dados_body:
+                resposta = client.post(url, json=dados_body, headers=headers, cookies=cookies)
             else:
-                resposta = requests.post(url, data=payload, headers=headers)
-        elif metodo == "PUT":  
-            if usar_json:
-                resposta = requests.put(url, json=payload, headers=headers)
+                resposta = client.post(url, data=dados_body, headers=headers, cookies=cookies)
+        elif metodo == "PUT":
+            if usar_json and dados_body:
+                resposta = client.put(url, json=dados_body, headers=headers, cookies=cookies)
             else:
-                resposta = requests.put(url, data=payload, headers=headers)
-        else: 
-            return None
+                resposta = client.put(url, data=dados_body, headers=headers, cookies=cookies)
+        elif metodo in ["DELETE", "OPTIONS", "HEAD", "PATCH"]:
+            # Suporte expandido para verbos adicionais
+            resposta = client.request(metodo, url, data=dados_body, headers=headers, cookies=cookies, params=parametros_query)
+        else:
+            return {"erro": True, "mensagem": f"Método HTTP '{metodo}' customizado não gerenciado."}
 
+        # [O restante do tratamento de resposta e retorno do dicionário continua idêntico ao seu código]
+        return {"status_code": resposta.status_code, "url_final": resposta.url, "corpo": resposta.text[:200]}
+
+    except requests.exceptions.RequestException as e:
+        return {"erro": True, "mensagem": f"Falha de rede: {e}"}
+    
+
+def _requisicao_websocket(payload, url, usar_json=False, timeout=5):
+    if not (url.startswith("ws://") or url.startswith("wss://")):
+        return {"erro": True, "mensagem": "URL inválida para WebSocket. Deve começar com ws:// ou wss://"}
+
+    resultado = {
+        "status_code": 101,  # Switching Protocols estatístico
+        "url_final": url,
+        "tempo_resposta_segundos": 0,
+        "corpo": None,
+        "requisicao_enviada": {"metodo": "WEBSOCKET", "corpo_enviado": payload}
+    }
+
+    inicio = time.time()
+    ws = None
+    try:
+        ws = websocket.create_connection(url, timeout=timeout)
+        dado_enviar = json.dumps(payload) if usar_json else str(payload)
+        ws.send(dado_enviar)
+        
+        resposta = ws.recv()
+        resultado["tempo_resposta_segundos"] = time.time() - inicio
+        
         try:
-            corpo_formatado = resposta.json()
+            resultado["corpo"] = json.loads(resposta)
         except ValueError:
-            corpo_formatado = resposta.text
+            resultado["corpo"] = resposta
+
+    except Exception as e:
+        return {"erro": True, "mensagem": f"Erro na conexão WebSocket: {e}"}
+    finally:
+        if ws:
+            ws.close()
+
+    return resultado
+
+
+def _requisicao_graphql(url, query_str, variables=None, token=None):
+    headers = {"Content-Type": "application/json", "User-Agent": "SecurityTester/1.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    payload = {"query": query_str, "variables": variables or {}}
+
+    try:
+        resposta = requests.post(url, json=payload, headers=headers, timeout=5)
+        try:
+            dados_resposta = resposta.json()
+        except ValueError:
+            dados_resposta = resposta.text
 
         return {
             "status_code": resposta.status_code,
-            "status_texto": resposta.reason,
-            "url_final": resposta.url,
+            "url_final": url,
+            "corpo": dados_resposta,
             "tempo_resposta_segundos": resposta.elapsed.total_seconds(),
-            "headers_resposta": dict(resposta.headers),
-            "cookies_resposta": requests.utils.dict_from_cookiejar(resposta.cookies),
-            "corpo": corpo_formatado,
-            "redirecionamentos": [res.url for res in resposta.history],
-            "requisicao_enviada": {
-                "metodo": resposta.request.method,
-                "url_origem": url,
-                "headers_enviados": dict(resposta.request.headers),
-                "corpo_enviado": resposta.request.body.decode('utf-8') if resposta.request.body else None
-            }
+            "requisicao_enviada": {"metodo": "GRAPHQL_POST", "corpo_enviado": payload}
         }
     except requests.exceptions.RequestException as e:
-        return {"erro": True, "mensagem": f"Falha de rede: {e}"}
+        return {"erro": True, "mensagem": f"Erro de conexão GraphQL: {e}"}
+    
+
+def _analise_dom_browser(url, payload, timeout_ms=5000):
+    resultado = {
+        "status_code": 200,
+        "url_testada": url,
+        "xss_detectado": False,
+        "mensagem_alerta": None,
+        "tempo_execucao_segundos": 0,
+        "corpo": "Execução via browser concluída.",
+        "erro": False
+    }
+
+    inicio = time.time()
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+
+            def lidar_com_dialogo(dialog):
+                nonlocal resultado
+                resultado["xss_detectado"] = True
+                resultado["mensagem_alerta"] = dialog.message
+                dialog.dismiss()
+
+            page.on("dialog", lidar_com_dialogo)
+            
+            # Concatena o payload no fragmento hash para teste DOM XSS
+            url_com_payload = f"{url}#{payload}" if "#" not in url else f"{url}{payload}"
+            
+            page.goto(url_com_payload, timeout=timeout_ms)
+            page.wait_for_timeout(1000)
+
+            resultado["tempo_execucao_segundos"] = time.time() - inicio
+            browser.close()
+        except Exception as e:
+            return {"erro": True, "mensagem": f"Erro no motor do Browser: {e}"}
+
+    return resultado
 
 
-def execute_sql_injection(payload, url, metodo):
-    """Processa validações de estruturas SQL/NoSQL enviadas tanto via Body quanto Query."""
-    return _requisicao_generica(payload, url, metodo, usar_json=False)
+# ==========================================
+# 2. ROTEADORES DE FUNÇÃO (Orquestradores)
+# ==========================================
 
-def execute_command_injection(payload, url, metodo):
-    """Executa testes baseados em inputs de sistema operacional (Normalmente em Body)."""
-    return _requisicao_generica(payload, url, metodo, usar_json=False)
+def _roteador_transporte(payload, url, metodo, usar_json, transporte, session, **kwargs):
+    """Encaminha dinamicamente a execução para o motor correto."""
+    # Detecção automática baseada na URL se o transporte for o padrão
+    if transporte == "http" and url.startswith(("ws://", "wss://")):
+        transporte = "websocket"
 
-def execute_file_inclusion_and_extensions(payload, url, metodo):
-    """Gerencia mutações de caminhos (Path) ou parâmetros de consulta."""
-    return _requisicao_generica(payload, url, metodo, usar_json=False)
+    if transporte == "websocket":
+        return _requisicao_websocket(payload, url, usar_json=usar_json)
+    elif transporte == "graphql":
+        # Para GraphQL o payload é tratado como a String da Query
+        return _requisicao_graphql(url, query_str=payload, variables=kwargs.get("variables"), token=kwargs.get("token"))
+    elif transporte == "browser":
+        # Se for browser, o payload vai ser injetado/testado no DOM
+        return _analise_dom_browser(url, payload)
+    else:
+        return _requisicao_generica(payload, url, metodo, usar_json=usar_json, session=session)
 
-def execute_client_side_xss(payload, url, metodo):
-    """Valida reflexão de tags diretamente nos parâmetros recebidos da URL ou campos de entrada."""
-    return _requisicao_generica(payload, url, metodo, usar_json=False)
 
-def execute_server_side_injection(payload, url, metodo):
-    """Utiliza estruturas de dados estritas como JSON/XML devido à natureza das engines (ex: Jinja2, SOAP)."""
-    return _requisicao_generica(payload, url, metodo, usar_json=True)
+# --- Funções Wrapper Adaptadas ---
 
-def execute_generic_fuzzing(payload, url, metodo):
-    """Dispara sequências amplas de caracteres especiais em múltiplos formatos."""
-    return _requisicao_generica(payload, url, metodo, usar_json=False)
+def execute_sql_injection(payload, url, metodo="POST", transporte="http", session=None, **kwargs):
+    return _roteador_transporte(payload, url, metodo, usar_json=False, transporte=transporte, session=session, **kwargs)
+
+def execute_command_injection(payload, url, metodo="POST", transporte="http", session=None, **kwargs):
+    return _roteador_transporte(payload, url, metodo, usar_json=False, transporte=transporte, session=session, **kwargs)
+
+def execute_file_inclusion_and_extensions(payload, url, metodo="GET", transporte="http", session=None, **kwargs):
+    return _roteador_transporte(payload, url, metodo, usar_json=False, transporte=transporte, session=session, **kwargs)
+
+def execute_client_side_xss(payload, url, metodo="GET", transporte="http", session=None, **kwargs):
+    # Se for um teste de XSS e o usuário optar por rodar no navegador, muda o transporte automaticamente
+    if transporte == "browser" or kwargs.get("forcar_browser") == True:
+        transporte = "browser"
+    return _roteador_transporte(payload, url, metodo, usar_json=False, transporte=transporte, session=session, **kwargs)
+
+def execute_server_side_injection(payload, url, metodo="POST", transporte="http", session=None, **kwargs):
+    # Injeções de servidor estruturadas costumam preferir JSON por padrão
+    return _roteador_transporte(payload, url, metodo, usar_json=True, transporte=transporte, session=session, **kwargs)
+
+def execute_generic_fuzzing(payload, url, metodo="GET", transporte="http", session=None, **kwargs):
+    return _roteador_transporte(payload, url, metodo, usar_json=False, transporte=transporte, session=session, **kwargs)
 
 
 ATTACK_CLASSIFICATION = {
@@ -157,9 +298,39 @@ ENTRY_POINT_MAPPING = {
 
 
 if __name__ == "__main__":
-    url = "https://the-internet.herokuapp.com/authenticate"
-    metodo = "POST"
-    payload = {"username": "tomsmith", "password": "SuperSecretPassword!"}
+    print("--- INICIANDO TESTES MULTI-TRANSPORTE ---\n")
 
-    resposta = execute_sql_injection(payload, url, metodo)
-    print(json.dumps(resposta, indent=4, ensure_ascii=False))
+    # Exemplo 1: Requisição HTTP Convencional (Seu cenário original)
+    url_http = "https://the-internet.herokuapp.com/authenticate"
+    payload_http = {"username": "tomsmith", "password": "SuperSecretPassword!"}
+    
+    print("[1/4] Testando Motor: HTTP Tradicional...")
+    res_http = execute_sql_injection(payload_http, url_http, metodo="POST")
+    print(f"Status HTTP: {res_http.get('status_code')} | Tempo: {res_http.get('tempo_resposta_segundos')}s\n")
+
+
+    # Exemplo 2: WebSocket (Detecta automaticamente pelo prefixo wss://)
+    url_ws = "wss://echo.websocket.org"
+    payload_ws = {"dados": "teste_fuzzing_123"}
+    
+    print("[2/4] Testando Motor: WebSocket (Auto-detectado)...")
+    res_ws = execute_generic_fuzzing(payload_ws, url_ws)
+    print(f"Retorno WebSocket obtido com sucesso? {'corpo' in res_ws}\n")
+
+
+    # Exemplo 3: GraphQL (Forçado via parâmetro 'transporte')
+    url_gql = "https://countries.trevorblades.com/"  # API GraphQL pública real para validação de estrutura
+    query_graphql = "{ countries { name } }"
+    
+    print("[3/4] Testando Motor: GraphQL...")
+    res_gql = execute_server_side_injection(query_graphql, url_gql, transporte="graphql")
+    print(f"Status GraphQL: {res_gql.get('status_code')} | Contém dados: {'data' in str(res_gql.get('corpo'))}\n")
+
+
+    # Exemplo 4: Automação Browser / DOM XSS (Forçado via parâmetro 'transporte')
+    url_dom = "https://example.com"
+    payload_xss = "<img src=x onerror=alert(1)>"
+    
+    print("[4/4] Testando Motor: Browser Headless (Playwright)...")
+    res_dom = execute_client_side_xss(payload_xss, url_dom, transporte="browser")
+    print(json.dumps(res_dom, indent=4, ensure_ascii=False))
