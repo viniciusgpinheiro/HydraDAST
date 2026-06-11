@@ -8,3 +8,4 @@ asyncpg
 python-dotenv
 xgboost
 scikit-learn
+websocket-client

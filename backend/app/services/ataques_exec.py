@@ -298,39 +298,107 @@ ENTRY_POINT_MAPPING = {
 
 
 if __name__ == "__main__":
-    print("--- INICIANDO TESTES MULTI-TRANSPORTE ---\n")
+    from dotenv import load_dotenv
+    import os
+    import psycopg2
+    from datetime import datetime
 
-    # Exemplo 1: Requisição HTTP Convencional (Seu cenário original)
-    url_http = "https://the-internet.herokuapp.com/authenticate"
-    payload_http = {"username": "tomsmith", "password": "SuperSecretPassword!"}
-    
-    print("[1/4] Testando Motor: HTTP Tradicional...")
-    res_http = execute_sql_injection(payload_http, url_http, metodo="POST")
-    print(f"Status HTTP: {res_http.get('status_code')} | Tempo: {res_http.get('tempo_resposta_segundos')}s\n")
+    load_dotenv()
+    conn_string = os.getenv("DATABASE_URL")
+    if not conn_string:
+        raise RuntimeError("Defina DATABASE_URL no .env")
 
+    conn = None
+    try:
+        conn = psycopg2.connect(conn_string)
+        cur = conn.cursor()
 
-    # Exemplo 2: WebSocket (Detecta automaticamente pelo prefixo wss://)
-    url_ws = "wss://echo.websocket.org"
-    payload_ws = {"dados": "teste_fuzzing_123"}
-    
-    print("[2/4] Testando Motor: WebSocket (Auto-detectado)...")
-    res_ws = execute_generic_fuzzing(payload_ws, url_ws)
-    print(f"Retorno WebSocket obtido com sucesso? {'corpo' in res_ws}\n")
+        # --- 1. Criar dados de teste (Usuário, Teste, Relatório) ---
+        print("--- CONFIGURANDO DADOS DE TESTE NO BANCO ---")
 
+        # Criar ou obter usuário
+        cur.execute("SELECT id FROM usuarios WHERE email = %s", ("usuario.teste@example.com",))
+        user_id = cur.fetchone()
+        if not user_id:
+            cur.execute("INSERT INTO usuarios (nome, email, senha_hash) VALUES (%s, %s, %s) RETURNING id",
+                        ("Usuário Teste", "usuario.teste@example.com", "senha_teste"))
+            user_id = cur.fetchone()[0]
+            print(f"Usuário de teste criado com ID: {user_id}")
+        else:
+            user_id = user_id[0]
+            print(f"Usando usuário de teste existente com ID: {user_id}")
 
-    # Exemplo 3: GraphQL (Forçado via parâmetro 'transporte')
-    url_gql = "https://countries.trevorblades.com/"  # API GraphQL pública real para validação de estrutura
-    query_graphql = "{ countries { name } }"
-    
-    print("[3/4] Testando Motor: GraphQL...")
-    res_gql = execute_server_side_injection(query_graphql, url_gql, transporte="graphql")
-    print(f"Status GraphQL: {res_gql.get('status_code')} | Contém dados: {'data' in str(res_gql.get('corpo'))}\n")
+        # Criar Teste
+        url_alvo = "https://the-internet.herokuapp.com/authenticate"
+        cur.execute("INSERT INTO testes (id_usuario, url, linguagem) VALUES (%s, %s, %s) RETURNING id",
+                    (user_id, url_alvo, "pt-br"))
+        teste_id = cur.fetchone()[0]
+        print(f"Teste criado com ID: {teste_id} para a URL: {url_alvo}")
 
+        # Criar Relatório
+        cur.execute("INSERT INTO relatorios (id_teste, data, status) VALUES (%s, %s, %s) RETURNING id",
+                    (teste_id, datetime.now(), "em_andamento"))
+        relatorio_id = cur.fetchone()[0]
+        print(f"Relatório criado com ID: {relatorio_id}")
+        
+        conn.commit()
+        print("--- DADOS DE TESTE CONFIGURADOS ---\n")
 
-    # Exemplo 4: Automação Browser / DOM XSS (Forçado via parâmetro 'transporte')
-    url_dom = "https://example.com"
-    payload_xss = "<img src=x onerror=alert(1)>"
-    
-    print("[4/4] Testando Motor: Browser Headless (Playwright)...")
-    res_dom = execute_client_side_xss(payload_xss, url_dom, transporte="browser")
-    print(json.dumps(res_dom, indent=4, ensure_ascii=False))
+        # --- 2. Executar um ataque de exemplo ---
+        print("--- EXECUTANDO ATAQUE E SALVANDO NO BANCO ---")
+        
+        tipo_ataque_exemplo = "SQL Injection"
+        payload_exemplo = "' OR 1=1 --"
+        metodo_exemplo = "POST"
+        
+        # Usando uma das funções existentes para executar o ataque
+        resultado_ataque = execute_sql_injection(
+            payload={"username": payload_exemplo, "password": "password"},
+            url=url_alvo,
+            metodo=metodo_exemplo
+        )
+
+        print(f"Resultado da execução: {resultado_ataque}")
+
+        # --- 3. Inserir o resultado do ataque na tabela ataques ---
+        query_str = json.dumps(resultado_ataque.get("requisicao_enviada", {}))
+        erro_str = resultado_ataque.get("mensagem")
+        
+        # Valores de exemplo para colunas que não temos ainda
+        solucao_exemplo = "Use prepared statements para evitar SQL Injection."
+        risco_exemplo = "Alto"
+        parametro_exemplo = "username"
+
+        cur.execute(
+            """
+            INSERT INTO ataques 
+            (id_relatorio, url, metodo, query, payload, erro, solucao, tipo_ataque, risco, parametro)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                relatorio_id,
+                resultado_ataque.get("url_final", url_alvo),
+                metodo_exemplo,
+                query_str,
+                payload_exemplo,
+                erro_str,
+                solucao_exemplo,
+                tipo_ataque_exemplo,
+                risco_exemplo,
+                parametro_exemplo
+            )
+        )
+        conn.commit()
+        print("\n--- ATAQUE REGISTRADO COM SUCESSO NO BANCO DE DADOS ---")
+
+    except psycopg2.Error as e:
+        print(f"Erro de banco de dados: {e}")
+        if conn:
+            conn.rollback()
+    except Exception as e:
+        print(f"Ocorreu um erro: {e}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+            print("Conexão com o banco de dados fechada.")
