@@ -2,8 +2,6 @@ import asyncio
 import os
 import re
 
-
-
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import Json
@@ -11,7 +9,6 @@ from psycopg2.extras import Json
 from services.crawler import run_smart_crawler
 from services.nlp_service import NLPService
 from services.feedback_service import FeedbackService
-
 from services.input_classifier import classificar_campo_hibrido
 
 
@@ -72,148 +69,60 @@ def main() -> None:
             cur.execute("SELECT version();")
             version = cur.fetchone()
             print(f"Conectado ao banco de dados: {version[0]}")
-            # TESTE RÁPIDO DE CONEXÃO COM A TABELA
+
             cur.execute("SELECT COUNT(*) FROM public.cache_payloads;")
             total = cur.fetchone()[0]
             print(f"[DEBUG] Total de payloads na tabela cache_payloads: {total}")
 
             tabela_usuario = _find_table_by_required_columns(
-                cur,
-                {"nome", "email", "senha_hash", "chave_api", "limite_requisicoes"},
-                schema=db_schema,
+                cur, {"nome", "email", "senha_hash", "chave_api", "limite_requisicoes"}, schema=db_schema,
             )
             tabela_teste = _find_table_by_required_columns(
-                cur,
-                {"id_usuario", "url_alvo", "linguagem", "login_info", "status"},
-                schema=db_schema,
+                cur, {"id_usuario", "url_alvo", "linguagem", "login_info", "status"}, schema=db_schema,
             )
             tabela_resultado_nlp = _find_table_by_required_columns(
-                cur,
-                {"id_teste", "classificacao_sugerida", "embedding_semantico", "conteudo_extraido"},
-                schema=db_schema,
+                cur, {"id_teste", "classificacao_sugerida", "embedding_semantico", "conteudo_extraido"}, schema=db_schema,
             )
 
             tabela_usuario = _safe_ident(tabela_usuario)
             tabela_teste = _safe_ident(tabela_teste)
             tabela_resultado_nlp = _safe_ident(tabela_resultado_nlp)
 
-            # nome_usuario = os.getenv("HYDRA_USER_NOME", "Usuário Teste Hydra")
-            # email_usuario = os.getenv("HYDRA_USER_EMAIL", "teste.hydradast@example.com")
-            # senha_hash = os.getenv("HYDRA_USER_SENHA_HASH", "hash_temporario_substituir")
-            # chave_api = os.getenv("HYDRA_USER_API_KEY", "")
-            # limite_requisicoes = int(os.getenv("HYDRA_USER_LIMITE", "100"))
-            # usuario_existente_id = os.getenv("HYDRA_USER_ID")
-
-            # if usuario_existente_id:
-            #     cur.execute(
-            #         f"SELECT id FROM {tabela_usuario} WHERE id = %s",
-            #         (usuario_existente_id,),
-            #     )
-            #     row = cur.fetchone()
-            #     if not row:
-            #         raise RuntimeError(f"HYDRA_USER_ID não encontrado na tabela {tabela_usuario}: {usuario_existente_id}")
-            #     id_usuario = row[0]
-            # else:
-            #     cur.execute(
-            #         f"""
-            #         INSERT INTO {tabela_usuario} (nome, email, senha_hash, chave_api, limite_requisicoes)
-            #         VALUES (%s, %s, %s, %s, %s)
-            #         ON CONFLICT (email)
-            #         DO UPDATE SET
-            #             nome = EXCLUDED.nome,
-            #             senha_hash = EXCLUDED.senha_hash,
-            #             chave_api = EXCLUDED.chave_api,
-            #             limite_requisicoes = EXCLUDED.limite_requisicoes
-            #         RETURNING id
-            #         """,
-            #         (nome_usuario, email_usuario, senha_hash, chave_api, limite_requisicoes),
-            #     )
-            #     id_usuario = cur.fetchone()[0]
-            # print(f"Usuário para teste: {id_usuario}")
-
-            # cur.execute(
-            #     f"SELECT id FROM {tabela_teste} WHERE url_alvo = %s AND id_usuario = %s", 
-            #     (url_vulneravel, id_usuario)
-            # )
-            # if cur.fetchone():
-            #     print(f"Aviso: O teste para {url_vulneravel} já existe. Continuando para fins de demonstração...")
-            
-            # cur.execute(
-            #     f"""
-            #     INSERT INTO {tabela_teste} (id_usuario, url_alvo, linguagem, login_info, status)
-            #     VALUES (%s, %s, %s, %s, %s)
-            #     RETURNING id
-            #     """,
-            #     (id_usuario, url_vulneravel, "pt-BR", Json({}), "processado"),
-            # )
-            # id_teste = cur.fetchone()[0]
-            # print(f"Novo teste criado: {id_teste}")
-
             inseridos = 0
             for res in lista_com_vetores:
                 input_original = res["input_original"]
                 embedding = res["embedding"]
-                embedding_literal = _to_pgvector_literal(embedding)
-                
-                # CHAMANDO A NOVA HEURÍSTICA HÍBRIDA
-                classificacao = classificar_campo_hibrido(
-                    cur=cur,
-                    input_obj=input_original,
-                    embedding_vetor=embedding,
-                    tabela_nlp=tabela_resultado_nlp
-                )
+                nome_campo = input_original.html_name or "(campo sem nome)"
 
-                # conteudo_extraido = {
-                #     "html_name": input_original.html_name,
-                #     "html_id": input_original.html_id,
-                #     "html_class": input_original.html_class,
-                #     "type": input_original.type,
-                #     "value": input_original.value,
-                #     "placeholder": input_original.placeholder,
-                #     "label_text": input_original.label_text,
-                #     "title": input_original.title,
-                #     "aria_label": input_original.aria_label,
-                #     "maxlength": input_original.maxlength,
-                #     "minlength": input_original.minlength,
-                #     "required": input_original.required,
-                #     "disabled": input_original.disabled,
-                #     "parent_form_id": input_original.parent_form_id,
-                #     "parent_form_action": input_original.parent_form_action,
-                #     "parent_form_method": input_original.parent_form_method,
-                # }
+                resultado_ia = feedback_engine.classificar_e_obter_payload_por_ia(embedding)
 
-                # cur.execute(
-                #     f"""
-                #     INSERT INTO {tabela_resultado_nlp}
-                #     (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
-                #     VALUES (%s, %s, %s::vector, %s)
-                #     """,
-                #     (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
-                # )
-                payload_alvo = feedback_engine.obter_payload_otimizado(embedding, classificacao)
-                if payload_alvo:
-                    print(f"\n[TESTE DE BUSCA VETORIAL]")
-                    print(f"|> Campo Detectado: {input_original.html_name}")
-                    print(f"|> Classificação IA: {classificacao}")
-                    print(f"|> Payload Retornado: {payload_alvo}") # <--- ESTE É O PRINT
-                    print(f"\n[*] Campo: {input_original.html_name} | Tipo Sugerido: {classificacao}")
-                    print(f"    [Munição] Payload extraído do Neon: {payload_alvo}")
+                if resultado_ia:
+                    categoria = resultado_ia["categoria_ia"]
+                    payload_alvo = resultado_ia["payload"]
+                    distancia = resultado_ia["distancia"]
 
+                    print(f"\n[CLASSIFICAÇÃO VIA PGVECTOR]")
+                    print(f"|> Campo Detectado: {nome_campo}")
+                    print(f"|> Categoria IA: {categoria} (Distância: {distancia:.4f})")
+                    print(f"|> Payload Escolhido: {payload_alvo}")
+
+                    # Exemplo de uso — troque pelos valores reais retornados
+                    # ao efetivamente submeter payload_alvo no formulário alvo.
                     status_simulado = 200
-                    html_simulado = "<html><body>Error: SQL syntax error near 'OR 1=1'</body></html>"
+                    html_simulado = "<html>...</html>"
 
-                    resultado_analise = feedback_engine.analisar_resposta(status_simulado, html_simulado)
-
-                    score_obtido = feedback_engine.calcular_recompensa(resultado_analise)
-
-                    print(f"    [Feedback] Análise: {resultado_analise} | Recompensa: {score_obtido}")
+                    resultado_analise = feedback_engine.analisar_resposta(
+                        status_simulado, html_simulado, payload=payload_alvo
+                    )
+                    print(f"|> Classificação: {resultado_analise['classificacao']} "
+                        f"(recompensa: {resultado_analise['recompensa']})")
                 else:
-                    print(f"\n[!] Aviso: Nenhum payload encontrado para o campo {input_original.html_name} com a categoria {classificacao}")
-                
+                    print(f"\n[!] Nenhuma categoria semântica correspondente para o campo {nome_campo}")
+
                 inseridos += 1
 
-            conn.commit()
             print(f"Registros NLP inseridos: {inseridos}")
+
 
 if __name__ == "__main__":
     main()
