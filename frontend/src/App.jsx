@@ -1,26 +1,25 @@
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard';
+import NovoScan from './pages/NovoScan';
+import Relatorios from './pages/Relatorios';
+import Relatorio from './pages/Relatorio';
+import Configuracoes from './pages/Configuracoes';
 
-const PaginaHome = () => <h1 style={{color: 'blue'}}>VOCÊ ESTÁ NA HOME</h1>;
-const PaginaScrapme = () => <h1 style={{color: 'green'}}>VOCÊ ESTÁ NA SCRAPME</h1>;
-
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
-      <nav style={{ padding: '20px', borderBottom: '1px solid #ccc' }}>
-        <Link to="/">Ir para Home</Link> | 
-        <Link to="/scrapme" style={{ marginLeft: '10px' }}>Ir para Scrapme</Link>
-      </nav>
-
-      <div style={{ padding: '20px' }}>
-        <Routes>
-          <Route path="/" element={<PaginaHome />} />
-          <Route path="/scrapme" element={<PaginaScrapme />} />
-          {/* Rota de segurança para qualquer erro de digitação na URL */}
-          <Route path="*" element={<h1>Ops! Caminho não encontrado.</h1>} />
-        </Routes>
-      </div>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/novo-scan" element={<NovoScan />} />
+          <Route path="/relatorios" element={<Relatorios />} />
+          <Route path="/relatorios/:id" element={<Relatorio />} />
+          <Route path="/relatorio" element={<Relatorio />} />
+          <Route path="/configuracoes" element={<Configuracoes />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   );
 }
-
-export default App;
