@@ -1,0 +1,2 @@
+flask>=3.0
+lxml>=5.0   ; # opcional: habilita XXE completo no FileVault (fallback sem lxml funciona)

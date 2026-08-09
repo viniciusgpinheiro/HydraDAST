@@ -29,14 +29,35 @@ export const scansRecentes = [
   { id: 4, url: 'https://mockflow.com', data: '12/10/2025', status: 'Concluído', risco: 'Médio' },
 ];
 
-// Motores de ataque disponíveis (Seleção de motores)
+// Motores / tipos de teste disponíveis.
+// Cada tipo de teste corresponde a um arquivo em backend/app/data/arsenal_final
+// (o "tipo de teste" é o nome do arquivo). `file` guarda o nome bruto do arquivo.
 export const motores = [
-  { key: 'sql', label: 'SQL Injection' },
-  { key: 'xss', label: 'XSS' },
-  { key: 'header', label: 'Segurança de header' },
-  { key: 'ddos', label: 'DDoS' },
-  { key: 'prompt', label: 'Prompt' },
-  { key: 'http', label: 'HTTP request' },
+  { key: 'SQL_Injection_Master', label: 'SQL Injection', file: 'SQL_Injection_Master.txt' },
+  { key: 'XSS_Master', label: 'XSS', file: 'XSS_Master.txt' },
+  { key: 'Command_Injection_Master', label: 'Command Injection', file: 'Command_Injection_Master.txt' },
+  { key: 'LFI_PathTraversal_Master', label: 'LFI / Path Traversal', file: 'LFI_PathTraversal_Master.txt' },
+  { key: 'NoSQL_Master', label: 'NoSQL Injection', file: 'NoSQL_Master.txt' },
+  { key: 'Template_Injection_Master', label: 'Template Injection (SSTI)', file: 'Template_Injection_Master.txt' },
+  { key: 'XXE-Fuzzing', label: 'XXE', file: 'XXE-Fuzzing.txt' },
+  { key: 'XML-FUZZ', label: 'XML Fuzz', file: 'XML-FUZZ.txt' },
+  { key: 'LDAP_Fuzzing', label: 'LDAP Injection', file: 'LDAP_Fuzzing.txt' },
+  { key: 'SSI-Injection-Jhaddix', label: 'SSI Injection', file: 'SSI-Injection-Jhaddix.txt' },
+  { key: 'FormatString-Jhaddix', label: 'Format String', file: 'FormatString-Jhaddix.txt' },
+  { key: 'login_bypass', label: 'Login Bypass', file: 'login_bypass.txt' },
+  { key: 'Metacharacters_fuzzdb', label: 'Metacharacters (fuzzdb)', file: 'Metacharacters_fuzzdb.txt' },
+  { key: 'Extensions_Master', label: 'Extensions', file: 'Extensions_Master.txt' },
+  { key: 'Polyglots', label: 'Polyglots', file: 'Polyglots.txt' },
+  { key: 'big-list-of-naughty-strings', label: 'Naughty Strings', file: 'big-list-of-naughty-strings.txt' },
+  { key: 'FuzzingStrings-SkullSecurity_org', label: 'Fuzzing Strings (SkullSecurity)', file: 'FuzzingStrings-SkullSecurity_org.txt' },
+  { key: 'fuzz-Bo0oM', label: 'Fuzz Bo0oM', file: 'fuzz-Bo0oM.txt' },
+  { key: 'fuzz-Bo0oM-friendly', label: 'Fuzz Bo0oM (friendly)', file: 'fuzz-Bo0oM-friendly.txt' },
+  { key: 'fully-qualified-java-classes', label: 'Java Classes', file: 'fully-qualified-java-classes.txt' },
+  { key: 'special-chars___urlencoded', label: 'Special Chars (URL-encoded)', file: 'special-chars___urlencoded.txt' },
+  { key: 'URI-hex', label: 'URI Hex', file: 'URI-hex.txt' },
+  { key: 'Unicode', label: 'Unicode', file: 'Unicode.txt' },
+  { key: 'human-friendly', label: 'Human Friendly', file: 'human-friendly.txt' },
+  { key: 'robot-friendly', label: 'Robot Friendly', file: 'robot-friendly.txt' },
 ];
 
 // Etapas do pipeline (Progresso)

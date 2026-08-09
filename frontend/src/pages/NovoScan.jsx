@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, Loader2, Circle } from 'lucide-react';
+import { Check, Loader2, Circle, ExpandIcon } from 'lucide-react';
 import { motores, etapasProgresso } from '../data/mock';
+import { iniciarPentest } from '../js/main';
+
+const user = "admin";
 
 function EtapaIcon({ status }) {
   if (status === 'done') return <Check size={18} className="status-icon sev-safe" />;
@@ -12,15 +15,28 @@ function EtapaIcon({ status }) {
 export default function NovoScan() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ url: '', linguagem: '', login: '', senha: '' });
-  const [selecionados, setSelecionados] = useState({ sql: true, xss: true });
+  const [selecionados, setSelecionados] = useState({ SQL_Injection_Master: true, XSS_Master: true });
   const [rodando, setRodando] = useState(false);
 
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const toggle = (k) => setSelecionados((s) => ({ ...s, [k]: !s[k] }));
 
-  const iniciar = (e) => {
+  const todosSelecionados = motores.every((m) => selecionados[m.key]);
+  const toggleTodos = () =>
+    setSelecionados(todosSelecionados ? {} : Object.fromEntries(motores.map((m) => [m.key, true])));
+
+  const iniciar = async (e) => {
     e.preventDefault();
     setRodando(true);
+    try {
+      const resultado = await iniciarPentest(user, form.url);
+      console.log('Pentest iniciado com sucesso:', resultado);
+    } catch (error) {
+      console.error('Falha ao iniciar o pentest:', error);
+      alert('Não foi possível iniciar o escaneamento.');
+    } finally {
+      setRodando(false);
+    }
   };
 
   return (
@@ -52,10 +68,15 @@ export default function NovoScan() {
           </fieldset>
 
           <div className="hd-mt-32">
-            <div className="hd-section-title">Seleção de motores</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 16 }}>
+            <div className="hd-flex-between" style={{ marginBottom: 16 }}>
+              <div className="hd-section-title" style={{ marginBottom: 0 }}>Seleção de motores</div>
+              <button type="button" className="hd-btn hd-btn-ghost hd-btn-auto" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={toggleTodos}>
+                {todosSelecionados ? 'Limpar todos' : 'Selecionar todos'}
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 14 }}>
               {motores.map((m) => (
-                <label key={m.key} className="hd-check">
+                <label key={m.key} className="hd-check" title={m.file}>
                   <input type="checkbox" checked={!!selecionados[m.key]} onChange={() => toggle(m.key)} />
                   {m.label}
                 </label>
