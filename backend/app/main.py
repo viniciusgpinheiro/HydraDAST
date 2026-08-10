@@ -47,6 +47,42 @@ def _to_pgvector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(f"{float(x):.8f}" for x in embedding) + "]"
 
 
+def _simular_envio_payload(payload_alvo: str) -> tuple[int, str]:
+    """
+    STUB TEMPORÁRIO — troque essa função pela integração real do seu colega
+    quando ele terminar o módulo de execução de ataques. A assinatura
+    (recebe o payload, devolve status_code e html) deve ser mantida igual
+    pra não precisar mexer no resto do main.py.
+    """
+    return 200, "<html>resposta simulada</html>"
+
+
+def _persistir_resultado(cur, tabela_resultado_nlp, id_teste, input_original, embedding, resultado_ia, resultado_analise):
+    embedding_literal = _to_pgvector_literal(embedding)
+
+    conteudo_extraido = {
+        "html_name": input_original.html_name,
+        "html_id": input_original.html_id,
+        "type": input_original.type,
+        "payload_id": resultado_ia["payload_id"],
+        "payload_usado": resultado_ia["payload"],
+        "categoria_ia": resultado_ia["categoria_ia"],
+        "distancia": resultado_ia["distancia"],
+        "classificacao": resultado_analise["classificacao"],
+        "recompensa": resultado_analise["recompensa"],
+        "status_code": resultado_analise["status_code"],
+    }
+
+    cur.execute(
+        f"""
+        INSERT INTO {tabela_resultado_nlp}
+        (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
+        VALUES (%s, %s, %s::vector, %s)
+        """,
+        (id_teste, resultado_analise["classificacao"], embedding_literal, Json(conteudo_extraido)),
+    )
+
+
 def main() -> None:
     load_dotenv()
     conn_string = os.getenv("DATABASE_URL")
@@ -88,6 +124,35 @@ def main() -> None:
             tabela_teste = _safe_ident(tabela_teste)
             tabela_resultado_nlp = _safe_ident(tabela_resultado_nlp)
 
+            nome_usuario = os.getenv("HYDRA_USER_NOME", "Usuário Teste Hydra")
+            email_usuario = os.getenv("HYDRA_USER_EMAIL", "teste.hydradast@example.com")
+            senha_hash = os.getenv("HYDRA_USER_SENHA_HASH", "hash_temporario_substituir")
+            chave_api = os.getenv("HYDRA_USER_API_KEY", "")
+            limite_requisicoes = int(os.getenv("HYDRA_USER_LIMITE", "100"))
+
+            cur.execute(
+                f"""
+                INSERT INTO {tabela_usuario} (nome, email, senha_hash, chave_api, limite_requisicoes)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (email)
+                DO UPDATE SET nome = EXCLUDED.nome
+                RETURNING id
+                """,
+                (nome_usuario, email_usuario, senha_hash, chave_api, limite_requisicoes),
+            )
+            id_usuario = cur.fetchone()[0]
+
+            cur.execute(
+                f"""
+                INSERT INTO {tabela_teste} (id_usuario, url_alvo, linguagem, login_info, status)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (id_usuario, url_vulneravel, "pt-BR", Json({}), "processado"),
+            )
+            id_teste = cur.fetchone()[0]
+            print(f"Novo teste criado: {id_teste}")
+
             inseridos = 0
             for res in lista_com_vetores:
                 input_original = res["input_original"]
@@ -96,29 +161,31 @@ def main() -> None:
 
                 resultado_ia = feedback_engine.classificar_e_obter_payload_por_ia(embedding)
 
-                if resultado_ia:
-                    categoria = resultado_ia["categoria_ia"]
-                    payload_alvo = resultado_ia["payload"]
-                    distancia = resultado_ia["distancia"]
-
-                    print(f"\n[CLASSIFICAÇÃO VIA PGVECTOR]")
-                    print(f"|> Campo Detectado: {nome_campo}")
-                    print(f"|> Categoria IA: {categoria} (Distância: {distancia:.4f})")
-                    print(f"|> Payload Escolhido: {payload_alvo}")
-
-                    # Exemplo de uso — troque pelos valores reais retornados
-                    # ao efetivamente submeter payload_alvo no formulário alvo.
-                    status_simulado = 200
-                    html_simulado = "<html>...</html>"
-
-                    resultado_analise = feedback_engine.analisar_resposta(
-                        status_simulado, html_simulado, payload=payload_alvo
-                    )
-                    print(f"|> Classificação: {resultado_analise['classificacao']} "
-                        f"(recompensa: {resultado_analise['recompensa']})")
-                else:
+                if not resultado_ia:
                     print(f"\n[!] Nenhuma categoria semântica correspondente para o campo {nome_campo}")
+                    continue
 
+                print(f"\n[CLASSIFICAÇÃO VIA PGVECTOR]")
+                print(f"|> Campo Detectado: {nome_campo}")
+                print(f"|> Categoria IA: {resultado_ia['categoria_ia']} (Distância: {resultado_ia['distancia']:.4f})")
+                print(f"|> Payload Escolhido: {resultado_ia['payload']}")
+
+                # TODO: trocar _simular_envio_payload pela função real do seu colega
+                status_code, html = _simular_envio_payload(resultado_ia["payload"])
+
+                resultado_analise = feedback_engine.analisar_resposta(
+                    status_code, html, payload=resultado_ia["payload"]
+                )
+                print(f"|> Classificação: {resultado_analise['classificacao']} (recompensa: {resultado_analise['recompensa']})")
+
+                feedback_engine.atualizar_score_confianca(
+                    resultado_ia["payload_id"], resultado_analise["recompensa"]
+                )
+
+                _persistir_resultado(
+                    cur, tabela_resultado_nlp, id_teste, input_original, embedding, resultado_ia, resultado_analise
+                )
+                conn.commit()
                 inseridos += 1
 
             print(f"Registros NLP inseridos: {inseridos}")
