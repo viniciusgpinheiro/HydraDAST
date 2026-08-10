@@ -1,4 +1,4 @@
-import { riscoClass, statusClass } from '../data/mock';
+import { riscoClass, statusClass } from '../lib/format';
 
 export function RiscoBadge({ value }) {
   return <span className={`hd-badge ${riscoClass(value)}`}>{value}</span>;

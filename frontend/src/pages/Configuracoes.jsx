@@ -1,12 +1,58 @@
-import { useState } from 'react';
-import { Link, MoveRight } from 'lucide-react';
-import { configuracoes, mapeamento } from '../data/mock';
-
-const iconMap = { 'Lucide Link': Link, MoveRight };
+import { useEffect, useState } from 'react';
+import { obterConfig, salvarConfig } from '../api';
 
 export default function Configuracoes() {
-  const [cfg, setCfg] = useState(configuracoes);
-  const update = (k) => (e) => setCfg((c) => ({ ...c, [k]: e.target.value }));
+  const [cfg, setCfg] = useState(null);
+  const [erro, setErro] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const [salvo, setSalvo] = useState(false);
+
+  useEffect(() => {
+    obterConfig().then(setCfg).catch((e) => setErro(e.message));
+  }, []);
+
+  const update = (k) => (e) => {
+    setSalvo(false);
+    setCfg((c) => ({ ...c, [k]: e.target.value }));
+  };
+
+  const salvar = async () => {
+    setSalvando(true);
+    setErro(null);
+    try {
+      const atualizado = await salvarConfig({
+        chaveApi: cfg.chaveApi,
+        respostaLLM: cfg.respostaLLM,
+        limiteRequisicoes: Number(cfg.limiteRequisicoes),
+      });
+      setCfg(atualizado);
+      setSalvo(true);
+    } catch (e) {
+      setErro(e.message);
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  if (erro && !cfg) {
+    return (
+      <>
+        <h1 className="hd-page-title">Configurações</h1>
+        <div className="hd-card" style={{ color: 'var(--hd-critical)' }}>
+          Não foi possível carregar as configurações: {erro}. O backend está rodando?
+        </div>
+      </>
+    );
+  }
+
+  if (!cfg) {
+    return (
+      <>
+        <h1 className="hd-page-title">Configurações</h1>
+        <div className="hd-card">Carregando…</div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -15,7 +61,7 @@ export default function Configuracoes() {
       <div className="hd-card">
         <div style={{ marginBottom: 20 }}>
           <label className="hd-label" htmlFor="chave">Chave de api</label>
-          <input id="chave" className="hd-input" value={cfg.chaveApi} onChange={update('chaveApi')} />
+          <input id="chave" className="hd-input" placeholder="Cole sua chave…" value={cfg.chaveApi} onChange={update('chaveApi')} />
         </div>
 
         <div className="hd-grid-2">
@@ -31,37 +77,14 @@ export default function Configuracoes() {
             <input id="limite" type="number" className="hd-input" value={cfg.limiteRequisicoes} onChange={update('limiteRequisicoes')} />
           </div>
         </div>
-      </div>
 
-      <div className="hd-mt-32">
-        <div className="hd-section-title">Tabela de mapeamento</div>
-        <table className="hd-table bordered">
-          <thead>
-            <tr>
-              <th>Entrada Identificada</th>
-              <th>Ícone de Conexão</th>
-              <th>Significado Semântico</th>
-              <th>Confiança</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mapeamento.map((row) => {
-              const Icon = iconMap[row.icone] || Link;
-              return (
-                <tr key={row.entrada}>
-                  <td style={{ fontFamily: 'ui-monospace, monospace' }}>{row.entrada}</td>
-                  <td>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--hd-brand)' }}>
-                      <Icon size={16} /> {row.icone}
-                    </span>
-                  </td>
-                  <td style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--hd-ai-2)' }}>{row.semantica}</td>
-                  <td className="sev-safe">{row.confianca}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="hd-mt-32" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <button type="button" className="hd-btn hd-btn-primary" onClick={salvar} disabled={salvando}>
+            {salvando ? 'Salvando…' : 'Salvar'}
+          </button>
+          {salvo && <span className="sev-safe">✓ Configurações salvas.</span>}
+          {erro && <span style={{ color: 'var(--hd-critical)' }}>⚠ {erro}</span>}
+        </div>
       </div>
     </>
   );

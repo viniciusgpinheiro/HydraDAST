@@ -36,7 +36,59 @@ Os resultados técnicos brutos são processados pelo Gemini 1.5.
 - **Dados:** PostgreSQL (Persistência de padrões de ataque).
 
 ## Instalação
-> python3 -m venv venv
-> source venv/bin/activate
-> pip3 install -r requirements.txt
-> python3 -m playwright install chromium
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
+python3 -m playwright install chromium   # opcional: só para o crawler completo
+```
+
+> As dependências pesadas (Playwright, PostgreSQL/pgvector, sentence-transformers, XGBoost)
+> são usadas pelo pipeline completo de IA. A **API de scan da demo** roda apenas com
+> `fastapi`, `uvicorn` e `requests`, então sobe mesmo sem elas instaladas.
+
+## ▶️ Como executar (demo integrada front + back)
+
+O fluxo atual é uma fatia vertical funcional: o front dispara um scan real, acompanha
+o progresso ao vivo e exibe o relatório com os resultados reais dos ataques HTTP.
+
+### 1. Backend (API FastAPI)
+A partir da pasta `backend/app`:
+```bash
+cd backend/app
+python3 -m uvicorn api.api:app --reload --port 8000
+```
+- API em `http://localhost:8000`
+- Documentação interativa (Swagger) em `http://localhost:8000/docs`
+
+### 2. Frontend (React + Vite)
+Em outro terminal, a partir de `frontend`:
+```bash
+cd frontend
+npm install      # apenas na primeira vez
+npm run dev
+```
+- Interface em `http://localhost:5173`
+- Para apontar para outra URL de API, defina `VITE_API_URL` (ex.: `VITE_API_URL=http://localhost:8000 npm run dev`).
+
+### 3. Rodar um scan
+1. Acesse **Novo scan**, informe uma URL (ex.: `https://the-internet.herokuapp.com/login`).
+2. Selecione os motores disponíveis (SQL Injection, XSS, Segurança de header).
+3. Clique em **Iniciar pentest** — as etapas do *Progresso* atualizam ao vivo (polling).
+4. Ao concluir, clique em **Abrir relatório** para ver as vulnerabilidades encontradas.
+5. **Dashboard** e **Relatórios** listam os scans já executados (dados 100% reais da API).
+
+### Endpoints principais
+| Método | Rota | Descrição |
+|--------|------|-----------|
+| `POST` | `/api/scans` | Inicia um scan em background; retorna `id` e `status` |
+| `GET`  | `/api/scans` | Lista os scans da sessão |
+| `GET`  | `/api/scans/{id}` | Estado/relatório atual de um scan (usado no polling) |
+| `GET`/`PUT` | `/api/config` | Configurações da aplicação |
+
+> **Nota sobre o estado atual:** a API da demo executa os ataques HTTP de verdade e
+> classifica as respostas com o `FeedbackService`. As camadas de IA (NLP semântico,
+> motor de eficácia XGBoost e aprendizado por reforço) existem no código
+> (`backend/app/services/`) mas ainda **não** estão no caminho do endpoint — essa é a
+> próxima etapa de integração. O armazenamento dos scans é em memória (reinicia junto
+> com o servidor).
