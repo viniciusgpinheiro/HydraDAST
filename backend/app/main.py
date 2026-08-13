@@ -10,7 +10,8 @@ from services.crawler import run_smart_crawler
 from services.nlp_service import NLPService
 from services.feedback_service import FeedbackService
 from services.input_classifier import classificar_campo_hibrido
-from ataques_exec import _roteador_transporte, execute_sql_injection
+from services.ataques_exec import _roteador_transporte, execute_sql_injection
+
 
 
 
@@ -184,8 +185,18 @@ def main() -> None:
                 print(f"|> Categoria IA: {resultado_ia['categoria_ia']} (Distância: {resultado_ia['distancia']:.4f})")
                 print(f"|> Payload Escolhido: {resultado_ia['payload']}")
 
-                # TODO: trocar _simular_envio_payload pela função real do seu colega
-                status_code, html = _simular_envio_payload(resultado_ia["payload"])
+                # Execução real do ataque enviando o payload para o campo detectado
+                res_exec = _roteador_transporte(
+                    payload={nome_campo: resultado_ia["payload"]},
+                    url=url_vulneravel,
+                    metodo="POST",
+                    usar_json=False,
+                    transporte="http",
+                    session=None
+                )
+
+                status_code = res_exec.get("status_code", 500)
+                html = res_exec.get("corpo", "")
 
                 resultado_analise = feedback_engine.analisar_resposta(
                     status_code, html, payload=resultado_ia["payload"]
