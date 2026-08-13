@@ -10,6 +10,8 @@ from services.crawler import run_smart_crawler
 from services.nlp_service import NLPService
 from services.feedback_service import FeedbackService
 from services.input_classifier import classificar_campo_hibrido
+from ataques_exec import _roteador_transporte, execute_sql_injection
+
 
 
 def _safe_ident(name: str) -> str:
@@ -47,15 +49,27 @@ def _to_pgvector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(f"{float(x):.8f}" for x in embedding) + "]"
 
 
-def _simular_envio_payload(payload_alvo: str) -> tuple[int, str]:
+def _enviar_payload_real(payload_alvo: str, url_alvo: str, metodo: str = "POST") -> tuple[int, str]:
     """
-    STUB TEMPORÁRIO — troque essa função pela integração real do seu colega
-    quando ele terminar o módulo de execução de ataques. A assinatura
-    (recebe o payload, devolve status_code e html) deve ser mantida igual
-    pra não precisar mexer no resto do main.py.
+    Substituto real da simulação. Executa a requisição enviando o payload.
     """
-    return 200, "<html>resposta simulada</html>"
-
+    # Exemplo montando o payload no corpo da requisição
+    dados = {"input": payload_alvo}
+    
+    # Executa através do roteador principal
+    res = _roteador_transporte(
+        payload=dados,
+        url=url_alvo,
+        metodo=metodo,
+        usar_json=False,
+        transporte="http",
+        session=None
+    )
+    
+    status_code = res.get("status_code", 500)
+    corpo = res.get("corpo", "")
+    
+    return status_code, corpo
 
 def _persistir_resultado(cur, tabela_resultado_nlp, id_teste, input_original, embedding, resultado_ia, resultado_analise):
     embedding_literal = _to_pgvector_literal(embedding)
