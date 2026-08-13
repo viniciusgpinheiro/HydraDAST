@@ -28,33 +28,40 @@ class FeedbackService:
         self.conn = db_connection
 
     def classificar_e_obter_payload_por_ia(self, vetor_nlp: list[float], limite_distancia: float = 0.8) -> dict | None:
-        """Busca no pgvector o payload mais próximo semanticamente do campo detectado."""
+        """Busca o payload mais adequado combinando similaridade semântica + histórico de eficácia (RL)."""
         if not self.conn:
             return None
 
         vetor_str = "[" + ",".join(f"{float(x):.8f}" for x in vetor_nlp) + "]"
 
+        # score_confianca começa em 0.5 (neutro). PESO_RL controla o quanto o
+        # histórico de eficácia pesa vs. a similaridade semântica pura.
+        PESO_RL = 0.15
+
         query = """
-            SELECT tipo_ataque, payload, (embedding_semantico <=> %s::vector) AS distancia
+            SELECT id, tipo_ataque, payload, score_confianca,
+                   (embedding_semantico <=> %s::vector) AS distancia
             FROM public.cache_payloads
             WHERE embedding_semantico IS NOT NULL
-            ORDER BY embedding_semantico <=> %s::vector ASC
+            ORDER BY (embedding_semantico <=> %s::vector) - (%s * (score_confianca - 0.5)) ASC
             LIMIT 1;
         """
 
         try:
             with self.conn.cursor() as cursor:
-                cursor.execute(query, (vetor_str, vetor_str))
+                cursor.execute(query, (vetor_str, vetor_str, PESO_RL))
                 resultado = cursor.fetchone()
 
-                if resultado and resultado[2] is not None:
-                    tipo_ataque, payload, distancia = resultado
+                if resultado:
+                    payload_id, tipo_ataque, payload, score_confianca, distancia = resultado
                     distancia = float(distancia) if str(distancia) != 'nan' else 0.0
 
                     if distancia <= limite_distancia:
                         return {
+                            "payload_id": payload_id,
                             "categoria_ia": tipo_ataque,
                             "payload": payload,
+                            "score_confianca": float(score_confianca),
                             "distancia": distancia
                         }
                 return None
@@ -98,3 +105,34 @@ class FeedbackService:
             "status_code": status_code,
             "payload": payload,
         }
+
+    def atualizar_score_confianca(self, payload_id: str, recompensa: int, taxa_aprendizado: float = 0.05) -> float | None:
+        """
+        Aplica a recompensa do RL ao score_confianca do payload usado.
+        Recompensa é normalizada para o intervalo [-1, 1] (maior recompensa possível é 20),
+        aplicada com uma taxa de aprendizado, e o score fica sempre entre 0.0 e 1.0.
+        """
+        if not self.conn:
+            return None
+
+        recompensa_normalizada = max(-1.0, min(1.0, recompensa / 20))
+
+        query = """
+            UPDATE public.cache_payloads
+            SET score_confianca = GREATEST(0.0, LEAST(1.0,
+                score_confianca + %s * %s
+            ))
+            WHERE id = %s
+            RETURNING score_confianca;
+        """
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, (taxa_aprendizado, recompensa_normalizada, payload_id))
+                novo_score = cursor.fetchone()[0]
+                self.conn.commit()
+                logger.info(f"[RL] Score do payload {payload_id} atualizado para {novo_score:.4f}")
+                return float(novo_score)
+        except Exception as e:
+            logger.error(f"Erro ao atualizar score_confianca: {e}")
+            self.conn.rollback()
+            return None

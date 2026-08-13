@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+<<<<<<< HEAD
+import { Check, Loader2, Circle, ExpandIcon } from 'lucide-react';
+import { motores, etapasProgresso } from '../data/mock';
+import { iniciarPentest } from '../js/main';
+
+const user = "admin";
+=======
 import { Check, Loader2, Circle } from 'lucide-react';
 import { motores, MOTORES_SUPORTADOS } from '../data/motores';
 import { iniciarScan, obterScan } from '../api';
+>>>>>>> 118561726bf9284ce887f6234e0916b89b8dea23
 
 function EtapaIcon({ status }) {
   if (status === 'done') return <Check size={18} className="status-icon sev-safe" />;
@@ -13,7 +21,11 @@ function EtapaIcon({ status }) {
 export default function NovoScan() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ url: '', linguagem: '', login: '', senha: '' });
+<<<<<<< HEAD
+  const [selecionados, setSelecionados] = useState({ SQL_Injection_Master: true, XSS_Master: true });
+=======
   const [selecionados, setSelecionados] = useState({ sql: true, xss: true, header: true });
+>>>>>>> 118561726bf9284ce887f6234e0916b89b8dea23
   const [rodando, setRodando] = useState(false);
   const [scanId, setScanId] = useState(null);
   const [etapas, setEtapas] = useState(null);
@@ -24,6 +36,13 @@ export default function NovoScan() {
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const toggle = (k) => setSelecionados((s) => ({ ...s, [k]: !s[k] }));
 
+<<<<<<< HEAD
+  const todosSelecionados = motores.every((m) => selecionados[m.key]);
+  const toggleTodos = () =>
+    setSelecionados(todosSelecionados ? {} : Object.fromEntries(motores.map((m) => [m.key, true])));
+
+=======
+>>>>>>> 118561726bf9284ce887f6234e0916b89b8dea23
   const iniciar = async (e) => {
     e.preventDefault();
     setErro(null);
@@ -40,6 +59,14 @@ export default function NovoScan() {
 
     setRodando(true);
     try {
+<<<<<<< HEAD
+      const resultado = await iniciarPentest(user, form.url);
+      console.log('Pentest iniciado com sucesso:', resultado);
+    } catch (error) {
+      console.error('Falha ao iniciar o pentest:', error);
+      alert('Não foi possível iniciar o escaneamento.');
+    } finally {
+=======
       const inicial = await iniciarScan({
         url: form.url.trim(),
         linguagem: form.linguagem || null,
@@ -51,6 +78,7 @@ export default function NovoScan() {
       setEtapas(inicial.etapas || []);
     } catch (err) {
       setErro(`Falha ao iniciar o scan: ${err.message}`);
+>>>>>>> 118561726bf9284ce887f6234e0916b89b8dea23
       setRodando(false);
     }
   };
@@ -115,6 +143,21 @@ export default function NovoScan() {
           </fieldset>
 
           <div className="hd-mt-32">
+<<<<<<< HEAD
+            <div className="hd-flex-between" style={{ marginBottom: 16 }}>
+              <div className="hd-section-title" style={{ marginBottom: 0 }}>Seleção de motores</div>
+              <button type="button" className="hd-btn hd-btn-ghost hd-btn-auto" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={toggleTodos}>
+                {todosSelecionados ? 'Limpar todos' : 'Selecionar todos'}
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 14 }}>
+              {motores.map((m) => (
+                <label key={m.key} className="hd-check" title={m.file}>
+                  <input type="checkbox" checked={!!selecionados[m.key]} onChange={() => toggle(m.key)} />
+                  {m.label}
+                </label>
+              ))}
+=======
             <div className="hd-section-title">Seleção de motores</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 16 }}>
               {motores.map((m) => {
@@ -131,6 +174,7 @@ export default function NovoScan() {
                   </label>
                 );
               })}
+>>>>>>> 118561726bf9284ce887f6234e0916b89b8dea23
             </div>
           </div>
 
