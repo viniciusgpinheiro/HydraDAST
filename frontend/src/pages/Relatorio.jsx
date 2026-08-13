@@ -1,10 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, Link } from 'react-router-dom';
 import { Info, ChevronDown, Search } from 'lucide-react';
-import { relatorioResumo, acuraciaBars, vulnerabilidades, riscoClass } from '../data/mock';
+import { riscoClass } from '../lib/format';
+import { obterScan } from '../api';
 import BarChart from '../components/BarChart';
 import CodeBlock from '../components/CodeBlock';
 
 const ORDEM_RISCO = { 'Crítico': 0, 'Alto': 1, 'Médio': 2, 'Baixo': 3 };
+
+function media(arr) {
+  if (!arr || !arr.length) return 0;
+  return Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+}
 
 function VulnItem({ v, aberto, onToggle }) {
   const d = v.ataqueDetalhe;
@@ -43,19 +50,78 @@ function VulnItem({ v, aberto, onToggle }) {
 }
 
 export default function Relatorio() {
-  const { url, vulnerabilidades: v, acuracia } = relatorioResumo;
-  const [aberto, setAberto] = useState('sql');
+  const { id } = useParams();
+  const [dados, setDados] = useState(null);
+  const [carregando, setCarregando] = useState(!!id);
+  const [erro, setErro] = useState(null);
+  const [aberto, setAberto] = useState(null);
   const [q, setQ] = useState('');
   const [ordem, setOrdem] = useState('risco');
 
+  useEffect(() => {
+    if (!id) return;
+    let ativo = true;
+    setCarregando(true);
+    obterScan(id)
+      .then((r) => {
+        if (!ativo) return;
+        setDados({
+          url: r.url,
+          resumo: r.resumo,
+          acuraciaBars: r.acuraciaBars,
+          acuracia: media(r.acuraciaBars),
+          vulnerabilidades: r.vulnerabilidades || [],
+        });
+        setAberto((r.vulnerabilidades || [])[0]?.id ?? null);
+      })
+      .catch((e) => ativo && setErro(e.message))
+      .finally(() => ativo && setCarregando(false));
+    return () => { ativo = false; };
+  }, [id]);
+
   const lista = useMemo(() => {
-    let arr = vulnerabilidades.filter(
+    if (!dados) return [];
+    let arr = dados.vulnerabilidades.filter(
       (item) => item.ataque.toLowerCase().includes(q.toLowerCase()) || item.rota.toLowerCase().includes(q.toLowerCase()),
     );
     if (ordem === 'risco') arr = [...arr].sort((a, b) => ORDEM_RISCO[a.risco] - ORDEM_RISCO[b.risco]);
     if (ordem === 'ataque') arr = [...arr].sort((a, b) => a.ataque.localeCompare(b.ataque));
     return arr;
-  }, [q, ordem]);
+  }, [dados, q, ordem]);
+
+  if (!id) {
+    return (
+      <>
+        <h1 className="hd-page-title">Relatório</h1>
+        <div className="hd-card" style={{ color: 'var(--hd-text-muted)' }}>
+          Nenhum relatório selecionado. Veja a lista em <Link to="/relatorios">Relatórios</Link> ou
+          {' '}<Link to="/novo-scan">inicie um novo escaneamento</Link>.
+        </div>
+      </>
+    );
+  }
+
+  if (carregando) {
+    return (
+      <>
+        <h1 className="hd-page-title">Relatório</h1>
+        <div className="hd-card">Carregando resultado do scan…</div>
+      </>
+    );
+  }
+
+  if (erro) {
+    return (
+      <>
+        <h1 className="hd-page-title">Relatório</h1>
+        <div className="hd-card" style={{ color: 'var(--hd-critical)' }}>
+          Não foi possível carregar o scan: {erro}
+        </div>
+      </>
+    );
+  }
+
+  const { url, resumo: v, acuracia, acuraciaBars } = dados;
 
   return (
     <>
