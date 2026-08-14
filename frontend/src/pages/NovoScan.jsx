@@ -12,7 +12,7 @@ function EtapaIcon({ status }) {
 
 export default function NovoScan() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ url: '', linguagem: '', login: '', senha: '' });
+  const [form, setForm] = useState({ url: '', linguagem: '' });
   const [selecionados, setSelecionados] = useState({ sql: true, xss: true, header: true });
   const [rodando, setRodando] = useState(false);
   const [scanId, setScanId] = useState(null);
@@ -43,8 +43,6 @@ export default function NovoScan() {
       const inicial = await iniciarScan({
         url: form.url.trim(),
         linguagem: form.linguagem || null,
-        login: form.login || null,
-        senha: form.senha || null,
         motores: motoresSelecionados.length ? motoresSelecionados : null,
       });
       setScanId(inicial.id);
@@ -101,18 +99,6 @@ export default function NovoScan() {
             <label className="hd-label" htmlFor="linguagem">linguagem</label>
             <input id="linguagem" className="hd-input" placeholder="Ex.: Python, PHP, Node.js" value={form.linguagem} onChange={update('linguagem')} />
           </div>
-
-          <fieldset className="hd-fieldset">
-            <legend>Configurações de Autenticação</legend>
-            <div style={{ marginBottom: 16 }}>
-              <label className="hd-label" htmlFor="login">Login</label>
-              <input id="login" className="hd-input" value={form.login} onChange={update('login')} />
-            </div>
-            <div>
-              <label className="hd-label" htmlFor="senha">Senha</label>
-              <input id="senha" type="password" className="hd-input" value={form.senha} onChange={update('senha')} />
-            </div>
-          </fieldset>
 
           <div className="hd-mt-32">
             <div className="hd-section-title">Seleção de motores</div>

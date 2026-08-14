@@ -11,3 +11,4 @@ python-dotenv
 xgboost
 scikit-learn
 websocket-client
+google-genai

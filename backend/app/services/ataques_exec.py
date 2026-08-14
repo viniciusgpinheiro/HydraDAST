@@ -68,7 +68,9 @@ def _requisicao_generica(payload, url, metodo, usar_json=False, injetar_em="body
             return {"erro": True, "mensagem": f"Método HTTP '{metodo}' customizado não gerenciado."}
 
         # [O restante do tratamento de resposta e retorno do dicionário continua idêntico ao seu código]
-        return {"status_code": resposta.status_code, "url_final": resposta.url, "corpo": resposta.text[:200]}
+        # Corpo maior que 200 chars: a classificação por regex (FeedbackService.analisar_resposta)
+        # precisa de contexto suficiente pra achar erros de banco/reflexão de payload.
+        return {"status_code": resposta.status_code, "url_final": resposta.url, "corpo": resposta.text[:5000]}
 
     except requests.exceptions.RequestException as e:
         return {"erro": True, "mensagem": f"Falha de rede: {e}"}

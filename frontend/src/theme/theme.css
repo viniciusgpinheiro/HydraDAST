@@ -79,6 +79,9 @@ a:hover { text-decoration: underline; }
 }
 
 .hd-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   font-size: 1.6rem;
   font-weight: 800;
   letter-spacing: 0.3px;
@@ -86,6 +89,7 @@ a:hover { text-decoration: underline; }
   padding: 0 8px;
 }
 .hd-logo span { color: var(--hd-brand); }
+.hd-logo img { border-radius: 50%; flex-shrink: 0; }
 
 .hd-nav { display: flex; flex-direction: column; gap: 14px; }
 

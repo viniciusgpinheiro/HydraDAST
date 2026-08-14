@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Info, ChevronDown, Search } from 'lucide-react';
+import { Info, ChevronDown, Search, AlertTriangle } from 'lucide-react';
 import { riscoClass } from '../lib/format';
 import { obterScan } from '../api';
 import BarChart from '../components/BarChart';
@@ -28,6 +28,13 @@ function VulnItem({ v, aberto, onToggle }) {
 
       {aberto && (
         <div className="hd-acc-body">
+          {v.fonteRelatorio === 'erro_llm' && (
+            <div className="hd-badge medium" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 16, width: 'fit-content' }}>
+              <AlertTriangle size={14} />
+              Relatório gerado com texto padrão — falha ao chamar o Gemini: {v.erroLLM}
+            </div>
+          )}
+
           <h6>Problema</h6>
           <p>&gt; {v.problema}</p>
 

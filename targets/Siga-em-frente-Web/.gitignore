@@ -1,0 +1,32 @@
+# Ambiente Virtual
+venv/
+env/
+*.egg-info
+*.pyc
+__pycache__/
+
+# Banco de Dados
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+.env
+.env.local
+
+# Temporários
+*.tmp
+*.bak
