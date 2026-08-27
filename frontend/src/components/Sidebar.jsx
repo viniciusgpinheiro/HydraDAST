@@ -11,7 +11,10 @@ const links = [
 export default function Sidebar() {
   return (
     <aside className="hd-sidebar">
-      <div className="hd-logo">Hydra<span>DAST</span></div>
+      <div className="hd-logo">
+        <img src="/logo.png" alt="" width={48} height={48} />
+        Hydra<span>DAST</span>
+      </div>
 
       <nav className="hd-nav">
         {links.map((link) => {

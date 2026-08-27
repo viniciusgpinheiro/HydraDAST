@@ -1,0 +1,532 @@
+"""Executor de scan para a integração front <-> back.
+
+Para cada motor (sql/xss), o fluxo "inteligente" roda primeiro:
+crawler real (Playwright) -> embedding NLP de cada campo -> seleção de payload
+via pgvector + score de RL (`FeedbackService`) -> execução real (`ataques_exec`)
+-> classificação da resposta -> atualização do score_confianca (RL).
+
+Se qualquer etapa desse caminho não estiver disponível (sem banco, sem
+Playwright, alvo sem formulário reconhecível etc.), cada motor cai de volta
+para o comportamento fixo anterior (payload único em `?id=`/`?q=`), então o
+scan nunca fica sem resultado por causa da parte "IA".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import uuid
+from datetime import datetime
+from urllib.parse import urlparse, urlunparse, urljoin
+
+import requests
+from dotenv import load_dotenv
+
+from services.feedback_service import FeedbackService
+from services.crawler import run_smart_crawler
+from services.ataques_exec import _requisicao_generica
+from services.llm_service import gerar_relatorio_llm
+
+load_dotenv()
+
+_TIPOS_NAO_TESTAVEIS = {"submit", "button", "hidden", "reset", "image", "file"}
+
+_nlp_singleton = None
+
+
+def _get_nlp():
+    """Carrega o NLPService uma única vez por processo (o modelo é pesado)."""
+    global _nlp_singleton
+    if _nlp_singleton is None:
+        try:
+            from services.nlp_service import NLPService
+            _nlp_singleton = NLPService()
+        except Exception as e:  # noqa: BLE001 - degrade para o modo fixo
+            print(f"[scan_runner] NLP indisponível, motores usarão o modo fixo: {e}")
+            _nlp_singleton = False
+    return _nlp_singleton or None
+
+
+def _abrir_conexao_db():
+    conn_string = os.getenv("DATABASE_URL")
+    if not conn_string:
+        return None
+    try:
+        import psycopg2
+        return psycopg2.connect(conn_string)
+    except Exception as e:  # noqa: BLE001 - degrade para o modo fixo
+        print(f"[scan_runner] Banco indisponível, RL/pgvector desativado nesta execução: {e}")
+        return None
+
+
+def _crawlear_contexto(url: str):
+    """Crawleia a página uma vez por scan e classifica os campos via NLP.
+
+    Retorna None se qualquer etapa falhar (Playwright ausente, alvo sem
+    inputs testáveis, etc.) para que os motores caiam no modo fixo.
+    """
+    nlp = _get_nlp()
+    if not nlp:
+        return None
+    try:
+        dados = asyncio.run(run_smart_crawler(url))
+    except Exception as e:  # noqa: BLE001
+        print(f"[scan_runner] Crawler falhou, caindo para o modo fixo: {e}")
+        return None
+    if not dados.inputs:
+        return None
+
+    campos_com_vetor = nlp.process_page(dados)
+    if not campos_com_vetor:
+        return None
+
+    grupos: dict[tuple[str, str], list] = {}
+    for inp in dados.inputs:
+        chave = (inp.parent_form_action or "", (inp.parent_form_method or "GET").upper())
+        grupos.setdefault(chave, []).append(inp)
+
+    return {"campos": campos_com_vetor, "grupos": grupos}
+
+
+def _montar_corpo_formulario(campo, campos_do_form, payload_escolhido: str) -> dict:
+    corpo = {}
+    for c in campos_do_form:
+        if not c.html_name or (c.type or "").lower() in _TIPOS_NAO_TESTAVEIS:
+            continue
+        corpo[c.html_name] = c.value or "teste123"
+    corpo[campo.html_name] = payload_escolhido
+    return corpo
+
+
+def _atacar_campo_real(url_base: str, contexto: dict, feedback: FeedbackService, categorias_alvo: set[str]):
+    """Escolhe o primeiro campo cuja classificação por IA bate com `categorias_alvo`
+    e dispara um ataque HTTP real nele. Retorna None se nada aplicável for encontrado
+    (banco fora do ar, nenhum campo compatível, falha de rede)."""
+    for item in contexto["campos"]:
+        campo = item["input_original"]
+        if not campo.html_name:
+            continue
+
+        resultado_ia = feedback.classificar_e_obter_payload_por_ia(item["embedding"])
+        if not resultado_ia or resultado_ia["categoria_ia"] not in categorias_alvo:
+            continue
+
+        chave_form = (campo.parent_form_action or "", (campo.parent_form_method or "GET").upper())
+        campos_do_form = contexto["grupos"].get(chave_form, [campo])
+        payload_usado = resultado_ia["payload"]
+        corpo = _montar_corpo_formulario(campo, campos_do_form, payload_usado)
+
+        metodo = (campo.parent_form_method or "GET").upper()
+        if metodo not in ("GET", "POST", "PUT"):
+            metodo = "POST"
+        injetar_em = "query" if metodo == "GET" else "body"
+        alvo = urljoin(url_base, campo.parent_form_action) if campo.parent_form_action else url_base
+
+        resposta = _requisicao_generica(corpo, alvo, metodo, injetar_em=injetar_em)
+        if resposta.get("erro"):
+            continue
+
+        status_code = resposta.get("status_code", 0)
+        corpo_resposta = resposta.get("corpo", "") or ""
+
+        reflexao = payload_usado in corpo_resposta
+        if reflexao:
+            classificacao = "VULNERABILIDADE_CONFIRMADA"
+        else:
+            classificacao = feedback.analisar_resposta(
+                status_code, corpo_resposta, payload=payload_usado
+            )["classificacao"]
+
+        recompensa = feedback.calcular_recompensa(classificacao)
+        feedback.atualizar_score_confianca(resultado_ia["payload_id"], recompensa)
+
+        resposta_txt = f"{metodo} {_rota_de(alvo)} - {status_code}" + (
+            " (payload refletido)" if reflexao else ""
+        )
+        return {
+            "campo": campo.html_name,
+            "payload": payload_usado,
+            "categoria_ia": resultado_ia["categoria_ia"],
+            "classificacao": classificacao,
+            "resposta_txt": resposta_txt,
+            "url_alvo": alvo,
+            "metodo": metodo,
+        }
+    return None
+
+
+# Mapeia a classificação do FeedbackService para o nível de risco exibido no front.
+_CLASSIFICACAO_PARA_RISCO = {
+    "VULNERABILIDADE_CONFIRMADA": "Crítico",
+    "SUCESSO_BYPASS": "Alto",
+    "POTENCIAL_ERRO_INTERNO": "Médio",
+    "FALHA_RESPOSTA_COMUM": "Baixo",
+    "FALHA_GENERICA": "Baixo",
+    "BLOQUEADO_PELO_WAF": "Baixo",
+}
+
+_ORDEM_RISCO = {"Crítico": 0, "Alto": 1, "Médio": 2, "Baixo": 3}
+
+
+# Base de conhecimento estática (remediação). O ataque em si é executado de verdade.
+_BASE_CONHECIMENTO = {
+    "sql": {
+        "ataque": "SQL Injection",
+        "parametro": "id",
+        "payload": "' OR '1'='1",
+        "problema": (
+            "O parâmetro é concatenado diretamente na query SQL, permitindo que "
+            "um atacante altere a lógica do comando (ex.: ' OR '1'='1) para "
+            "burlar filtros ou extrair dados do banco."
+        ),
+        "solucao": (
+            "Utilize queries parametrizadas (prepared statements) para que o valor "
+            "seja tratado como dado, nunca como comando."
+        ),
+        "codigo": (
+            "# Vulnerável\n"
+            "query = f\"SELECT * FROM users WHERE id = {id_usuario}\"\n\n"
+            "# Seguro (parametrizado)\n"
+            "cursor.execute(\"SELECT * FROM users WHERE id = ?\", (id_usuario,))"
+        ),
+    },
+    "xss": {
+        "ataque": "XSS",
+        "parametro": "q",
+        "payload": "<script>alert(1)</script>",
+        "problema": (
+            "Conteúdo do usuário é refletido na página sem sanitização, permitindo "
+            "injeção de scripts no navegador da vítima (roubo de sessão, ações em "
+            "nome do usuário)."
+        ),
+        "solucao": (
+            "Escape a saída HTML e aplique uma Content-Security-Policy restritiva. "
+            "Nunca insira entrada do usuário diretamente no DOM."
+        ),
+        "codigo": (
+            "# Vulnerável\n"
+            "resposta = f\"<div>Resultado: {termo}</div>\"\n\n"
+            "# Seguro\n"
+            "import html\n"
+            "resposta = f\"<div>Resultado: {html.escape(termo)}</div>\""
+        ),
+    },
+    "header": {
+        "ataque": "Segurança de header",
+        "parametro": "—",
+        "payload": "Requisição inspecionando cabeçalhos de segurança",
+        "problema": (
+            "Cabeçalhos de segurança ausentes (X-Frame-Options, X-Content-Type-Options, "
+            "Strict-Transport-Security) expõem a aplicação a clickjacking e downgrade "
+            "de protocolo."
+        ),
+        "solucao": (
+            "Adicione os cabeçalhos de segurança na camada de resposta (middleware)."
+        ),
+        "codigo": (
+            "@app.middleware(\"http\")\n"
+            "async def add_security_headers(request, call_next):\n"
+            "    response = await call_next(request)\n"
+            "    response.headers[\"X-Frame-Options\"] = \"DENY\"\n"
+            "    response.headers[\"X-Content-Type-Options\"] = \"nosniff\"\n"
+            "    response.headers[\"Strict-Transport-Security\"] = \"max-age=31536000\"\n"
+            "    return response"
+        ),
+    },
+}
+
+# Cabeçalhos de segurança verificados no motor "header".
+_HEADERS_SEGURANCA = [
+    "x-frame-options",
+    "x-content-type-options",
+    "strict-transport-security",
+    "content-security-policy",
+]
+
+
+def _normalizar_url(url: str) -> str:
+    if not url:
+        raise ValueError("URL vazia")
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
+def _rota_de(url: str) -> str:
+    caminho = urlparse(url).path or "/"
+    return caminho
+
+
+def _com_query(url: str, param: str, valor: str) -> str:
+    partes = urlparse(url)
+    query = f"{param}={valor}"
+    nova = partes._replace(query=query)
+    return urlunparse(nova)
+
+
+def _executar_sql(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+    kb = _BASE_CONHECIMENTO["sql"]
+
+    if contexto:
+        smart = _atacar_campo_real(
+            url, contexto, feedback, {"credencial_senha", "credencial_identificador"}
+        )
+        if smart:
+            return _montar_vuln_ia("sql", kb, smart)
+
+    # Fallback: nenhum campo de credencial encontrado/classificado -> payload fixo.
+    alvo = _com_query(url, kb["parametro"], kb["payload"])
+    try:
+        r = requests.get(alvo, timeout=8, headers={"User-Agent": "HydraDAST/1.0"})
+        analise = feedback.analisar_resposta(r.status_code, r.text, payload=kb["payload"])
+        resposta_txt = f"GET {_rota_de(alvo)} - {r.status_code}"
+        metodo = "GET"
+    except requests.exceptions.RequestException as e:
+        analise = {"classificacao": "FALHA_GENERICA"}
+        resposta_txt = f"Falha de rede: {e}"
+        metodo = "GET"
+    return _montar_vuln("sql", kb, metodo, url, alvo, analise, resposta_txt)
+
+
+def _executar_xss(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+    kb = _BASE_CONHECIMENTO["xss"]
+
+    if contexto:
+        smart = _atacar_campo_real(url, contexto, feedback, {"campo_generico", "busca_pesquisa"})
+        if smart:
+            return _montar_vuln_ia("xss", kb, smart)
+
+    # Fallback: nenhum campo genérico/busca encontrado -> payload fixo.
+    alvo = _com_query(url, kb["parametro"], kb["payload"])
+    reflexao = False
+    try:
+        r = requests.get(alvo, timeout=8, headers={"User-Agent": "HydraDAST/1.0"})
+        reflexao = kb["payload"] in r.text
+        # Reflexão do payload sem escape é indício direto de XSS.
+        if reflexao:
+            classificacao = "VULNERABILIDADE_CONFIRMADA"
+        else:
+            analise = feedback.analisar_resposta(r.status_code, r.text, payload=kb["payload"])
+            classificacao = analise["classificacao"]
+        resposta_txt = f"GET {_rota_de(alvo)} - {r.status_code}" + (
+            " (payload refletido)" if reflexao else ""
+        )
+        metodo = "GET"
+    except requests.exceptions.RequestException as e:
+        classificacao = "FALHA_GENERICA"
+        resposta_txt = f"Falha de rede: {e}"
+        metodo = "GET"
+    return _montar_vuln("xss", kb, metodo, url, alvo, {"classificacao": classificacao}, resposta_txt)
+
+
+def _executar_header(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+    kb = _BASE_CONHECIMENTO["header"]
+    try:
+        r = requests.get(url, timeout=8, headers={"User-Agent": "HydraDAST/1.0"})
+        presentes = {h.lower() for h in r.headers.keys()}
+        faltando = [h for h in _HEADERS_SEGURANCA if h not in presentes]
+        if faltando:
+            classificacao = "POTENCIAL_ERRO_INTERNO"  # -> Médio
+            resposta_txt = f"GET {_rota_de(url)} - {r.status_code} (faltando: {', '.join(faltando)})"
+        else:
+            classificacao = "FALHA_RESPOSTA_COMUM"  # -> Baixo (protegido)
+            resposta_txt = f"GET {_rota_de(url)} - {r.status_code} (todos os cabeçalhos presentes)"
+        metodo = "GET"
+    except requests.exceptions.RequestException as e:
+        classificacao = "FALHA_GENERICA"
+        resposta_txt = f"Falha de rede: {e}"
+        metodo = "GET"
+    return _montar_vuln("header", kb, metodo, url, url, {"classificacao": classificacao}, resposta_txt)
+
+
+def _texto_relatorio(kb, *, ataque, parametro, payload, metodo, url, resposta, classificacao) -> dict:
+    """Texto problema/solução/código: tenta o Gemini (se ligado em Configurações)
+    e cai pro texto estático da base de conhecimento em qualquer falha.
+
+    Sempre inclui "fonteRelatorio" ('gemini' | 'estatico' | 'erro_llm') pro
+    front conseguir avisar quando o LLM estava ligado mas falhou de verdade
+    (distinto de simplesmente estar desligado)."""
+    resultado = gerar_relatorio_llm(
+        ataque=ataque, parametro=parametro, payload=payload, metodo=metodo,
+        url=url, resposta=resposta, classificacao=classificacao,
+    )
+    if resultado["dados"]:
+        return {**resultado["dados"], "fonteRelatorio": "gemini"}
+
+    texto = {"problema": kb["problema"], "solucao": kb["solucao"], "codigo": kb["codigo"]}
+    if resultado["erro"]:
+        texto["fonteRelatorio"] = "erro_llm"
+        texto["erroLLM"] = resultado["erro"]
+    else:
+        texto["fonteRelatorio"] = "estatico"
+    return texto
+
+
+def _montar_vuln(vid, kb, metodo, url_base, url_alvo, analise, resposta_txt) -> dict:
+    classificacao = analise.get("classificacao", "FALHA_GENERICA")
+    risco = _CLASSIFICACAO_PARA_RISCO.get(classificacao, "Baixo")
+    texto = _texto_relatorio(
+        kb, ataque=kb["ataque"], parametro=kb["parametro"], payload=kb["payload"],
+        metodo=metodo, url=url_alvo, resposta=resposta_txt, classificacao=classificacao,
+    )
+    return {
+        "id": vid,
+        "ataque": kb["ataque"],
+        "metodo": metodo,
+        "rota": _rota_de(url_base),
+        "risco": risco,
+        **texto,
+        "ataqueDetalhe": {
+            "url": url_alvo,
+            "parametro": kb["parametro"],
+            "payload": kb["payload"],
+            "resposta": resposta_txt,
+        },
+    }
+
+
+def _montar_vuln_ia(vid, kb, smart: dict) -> dict:
+    """Mesmo formato de `_montar_vuln`, mas com o campo/payload/resposta reais
+    escolhidos pelo pipeline de IA (crawler + NLP + pgvector + RL) em vez do
+    payload fixo da base de conhecimento."""
+    risco = _CLASSIFICACAO_PARA_RISCO.get(smart["classificacao"], "Baixo")
+    texto = _texto_relatorio(
+        kb, ataque=kb["ataque"], parametro=smart["campo"], payload=smart["payload"],
+        metodo=smart["metodo"], url=smart["url_alvo"], resposta=smart["resposta_txt"],
+        classificacao=smart["classificacao"],
+    )
+    return {
+        "id": vid,
+        "ataque": kb["ataque"],
+        "metodo": smart["metodo"],
+        "rota": _rota_de(smart["url_alvo"]),
+        "risco": risco,
+        **texto,
+        "ataqueDetalhe": {
+            "url": smart["url_alvo"],
+            "parametro": f'{smart["campo"]} (IA: {smart["categoria_ia"]})',
+            "payload": smart["payload"],
+            "resposta": smart["resposta_txt"],
+        },
+    }
+
+
+_MOTORES = {
+    "sql": _executar_sql,
+    "xss": _executar_xss,
+    "header": _executar_header,
+}
+
+_LABEL_MOTOR = {
+    "sql": "SQL Injection",
+    "xss": "XSS",
+    "header": "Segurança de header",
+}
+
+
+def _snapshot(scan_id, url, status, etapas, vulnerabilidades):
+    """Estado atual do scan, no formato consumido pelo front."""
+    resumo = _resumir(url, vulnerabilidades)
+    return {
+        "id": scan_id,
+        "url": url,
+        "criadoEm": datetime.now().isoformat(timespec="seconds"),
+        "status": status,  # "running" | "done" | "error"
+        "etapas": etapas,
+        "resumo": resumo,
+        "acuraciaBars": _acuracia_bars(vulnerabilidades),
+        "vulnerabilidades": sorted(
+            vulnerabilidades, key=lambda v: _ORDEM_RISCO.get(v["risco"], 3)
+        ),
+    }
+
+
+def executar_scan(url: str, motores: list[str] | None = None, on_progress=None, scan_id=None, **_ignorados) -> dict:
+    """Executa os ataques selecionados, reportando o progresso etapa a etapa.
+
+    Se `on_progress` for fornecido, ele é chamado com um snapshot completo do
+    scan após cada etapa (para o polling do front). Retorna o relatório final.
+    """
+    url = _normalizar_url(url)
+    motores = [m for m in (motores or ["sql", "xss", "header"]) if m in _MOTORES]
+    if not motores:
+        motores = list(_MOTORES.keys())
+    scan_id = scan_id or str(uuid.uuid4())
+
+    # Monta as etapas: conexão -> um passo por motor -> relatório.
+    etapas = [{"key": "conexao", "label": "Conectando ao alvo", "status": "pending"}]
+    for m in motores:
+        etapas.append({"key": m, "label": _LABEL_MOTOR[m], "status": "pending"})
+    etapas.append({"key": "relatorio", "label": "Gerando relatório", "status": "pending"})
+
+    vulnerabilidades: list[dict] = []
+
+    def _set(chave, status):
+        for et in etapas:
+            if et["key"] == chave:
+                et["status"] = status
+        if on_progress:
+            estado = "done" if chave == "relatorio" and status == "done" else "running"
+            on_progress(_snapshot(scan_id, url, estado, etapas, vulnerabilidades))
+
+    # Etapa de conexão: abre o banco (RL/pgvector) e crawleia a página real
+    # (Playwright + NLP) para os motores mirarem nos campos de verdade.
+    # Qualquer falha aqui degrada silenciosamente para o modo fixo anterior.
+    _set("conexao", "running")
+    conn = _abrir_conexao_db()
+    feedback = FeedbackService(db_connection=conn)
+    contexto = _crawlear_contexto(url) if conn else None
+    _set("conexao", "done")
+
+    try:
+        # Executa cada motor selecionado.
+        for chave in motores:
+            _set(chave, "running")
+            vulnerabilidades.append(_MOTORES[chave](url, feedback, contexto))
+            _set(chave, "done")
+    finally:
+        if conn:
+            conn.close()
+
+    # Relatório final.
+    _set("relatorio", "running")
+    _set("relatorio", "done")
+
+    return _snapshot(scan_id, url, "done", etapas, vulnerabilidades)
+
+
+def _resumir(url: str, vulns: list[dict]) -> dict:
+    contagem = {"Crítico": 0, "Alto": 0, "Médio": 0, "Baixo": 0}
+    for v in vulns:
+        contagem[v["risco"]] = contagem.get(v["risco"], 0) + 1
+
+    relevantes = sum(1 for v in vulns if v["risco"] in ("Crítico", "Alto", "Médio"))
+    if contagem["Crítico"]:
+        nivel = "Risco crítico"
+    elif contagem["Alto"]:
+        nivel = "Risco alto"
+    elif contagem["Médio"]:
+        nivel = "Risco moderado"
+    else:
+        nivel = "Risco baixo"
+
+    return {
+        "url": url,
+        "total": relevantes,
+        "nivel": nivel,
+        "criticas": contagem["Crítico"],
+        "altas": contagem["Alto"],
+        "medias": contagem["Médio"],
+        "baixas": contagem["Baixo"],
+    }
+
+
+def _acuracia_bars(vulns: list[dict]) -> list[int]:
+    # Placeholder visual derivado dos riscos encontrados (o modelo de eficácia
+    # real — XGBoost — entra numa etapa posterior).
+    peso = {"Crítico": 95, "Alto": 80, "Médio": 60, "Baixo": 40}
+    base = [peso.get(v["risco"], 40) for v in vulns] or [50]
+    barras = []
+    for i in range(12):
+        barras.append(base[i % len(base)])
+    return barras

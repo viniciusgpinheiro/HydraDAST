@@ -1,3 +1,5 @@
+fastapi
+uvicorn[standard]
 playwright
 pydantic
 sentence-transformers
@@ -9,3 +11,4 @@ python-dotenv
 xgboost
 scikit-learn
 websocket-client
+google-genai

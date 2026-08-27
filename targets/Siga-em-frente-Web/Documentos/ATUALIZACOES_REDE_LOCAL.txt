@@ -1,0 +1,241 @@
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║        🌐 ATUALIZAÇÃO: SUPORTE A REDE LOCAL - SIGA EM FRENTE 🌐           ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+✅ IMPLEMENTAÇÃO CONCLUÍDA COM SUCESSO!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 ALTERAÇÕES REALIZADAS:
+
+1. ✅ siga.py (MODIFICADO)
+   └─ Adicionado suporte para detectar IP local automaticamente
+   └─ Função get_local_ip() implementada com 2 métodos de detecção
+   └─ Exibe URLs de acesso ao iniciar aplicação
+   └─ Flask rodando em 0.0.0.0:5001 (todas as interfaces)
+
+2. ✅ get_network_info.py (NOVO)
+   └─ Script para descobrir endereço IP local da máquina
+   └─ Exibe informações de rede formatadas
+   └─ Instruções para usar em diferentes cenários
+   └─ Exemplo: python get_network_info.py
+
+3. ✅ REDE_LOCAL.md (NOVO - 9.8 KB)
+   └─ Guia completo para acessar aplicação via rede local
+   └─ Instruções para VM Linux na mesma rede
+   └─ Configuração de firewall Windows
+   └─ Troubleshooting detalhado
+   └─ Exemplos de exploits via rede
+
+4. ✅ INICIO_RAPIDO.md (ATUALIZADO)
+   └─ Adicionada saída correta da aplicação com IP
+   └─ Instruções para acessar localmente e via rede
+   └─ Troubleshooting para VM Linux
+   └─ Links para documentação de rede local
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 COMO USAR:
+
+### Passo 1: Iniciar Aplicação
+
+```bash
+cd siga-em-frente
+python siga.py
+```
+
+### Saída Esperada:
+
+```
+================================================================================
+🎓 MÁQUINA SIGA EM FRENTE - AULASHACK
+================================================================================
+
+✅ Aplicação iniciada com sucesso!
+
+📍 URLS DE ACESSO:
+
+  🖥️  Localhost:      http://127.0.0.1:5001
+  🌐 Rede Local:      http://192.168.1.5:5001
+
+================================================================================
+```
+
+### Passo 2: Acessar de Outra Máquina
+
+**Windows na mesma rede:**
+```
+http://192.168.1.5:5001
+```
+
+**VM Linux:**
+```bash
+curl http://192.168.1.5:5001
+python3 exploit.py --target 192.168.1.5:5001
+```
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔍 FUNCIONALIDADES IMPLEMENTADAS:
+
+✅ Detecção Automática de IP Local
+  └─ Método 1: Conectar a servidor externo (mais confiável)
+  └─ Método 2: Usar gethostbyname() (fallback)
+  └─ Exibe no console ao iniciar
+
+✅ Múltiplas Interfaces de Rede
+  └─ 127.0.0.1:5001 (localhost - máquina local)
+  └─ 192.168.1.5:5001 (rede local - outras máquinas)
+
+✅ Script Auxiliar (get_network_info.py)
+  └─ Descobrir IP sem rodar a aplicação
+  └─ Útil para troubleshooting
+
+✅ Documentação Completa (REDE_LOCAL.md)
+  └─ Acesso de Windows
+  └─ Acesso de VM Linux
+  └─ Configuração de Firewall
+  └─ Exemplos de exploits
+  └─ Troubleshooting
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 CENÁRIO DE USO PARA AULAS:
+
+Host (Windows):
+  1. Executar: python siga.py
+  2. Anotar IP exibido (ex: 192.168.1.5)
+
+VM Linux (Atacante):
+  1. Ping no IP para confirmar conectividade
+  2. Acessar: curl http://192.168.1.5:5001
+  3. Executar exploits contra a aplicação
+
+Resultado:
+  ✓ Alunos conseguem fazer ataques web reais em rede local
+  ✓ Simula ambiente de pentest real
+  ✓ Sem necessidade de configurações complexas
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚙️ DETALHES TÉCNICOS:
+
+Função get_local_ip():
+  • Conecta a 8.8.8.8:80 via UDP (sem enviar dados)
+  • Obtém o IP local que seria usado nessa conexão
+  • Fallback: gethostbyname(hostname)
+  • Última opção: retorna 127.0.0.1
+
+Flask Bind:
+  • host='0.0.0.0' (escuta em todas as interfaces)
+  • port=5001 (padrão da aplicação)
+  • debug=False (modo produção seguro)
+
+Firewall Windows:
+  • Instruções incluídas em REDE_LOCAL.md
+  • PowerShell e CMD exemplos fornecidos
+  • Permite porta 5001 automaticamente
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📚 DOCUMENTAÇÃO RELACIONADA:
+
+1. REDE_LOCAL.md ⭐⭐⭐ LEIA PRIMEIRO
+   └─ Guia completo de rede local
+   └─ Todos os detalhes de acesso e configuração
+
+2. INICIO_RAPIDO.md
+   └─ 3 passos rápidos para começar
+   └─ Agora inclui informações de rede
+
+3. siga.py (modificado)
+   └─ Código fonte com detecção de IP
+   └─ Comentários explicativos
+
+4. get_network_info.py (novo)
+   └─ Script auxiliar para descobrir IP
+   └─ Usa: python get_network_info.py
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✨ BENEFÍCIOS:
+
+✓ Detecção automática de IP (sem configuração manual)
+✓ Funciona com qualquer IP da rede local
+✓ Suporta VMs Linux na mesma rede
+✓ Documenta todo o processo
+✓ Inclui troubleshooting
+✓ Pronto para usar em aulas
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔐 SEGURANÇA:
+
+⚠️ Lembrar:
+  • Porta 5001 está aberta para toda a rede local
+  • Use APENAS em ambiente educacional controlado
+  • Não exponha para internet pública
+  • Configure firewall corretamente
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📝 PRÓXIMOS PASSOS:
+
+1. Fazer download do projeto atualizado
+2. Ler REDE_LOCAL.md para detalhes completos
+3. Testar a detecção de IP: python siga.py
+4. Testar acesso de outra máquina: http://<IP>:5001
+5. Configurar firewall se necessário
+6. Realizar testes de pentest via rede local
+
+═══════════════════════════════════════════════════════════════════════════════
+
+❓ DÚVIDAS FREQUENTES:
+
+P: Como descobrir o IP local?
+R: Execute: python get_network_info.py
+   Ou observe quando rodar: python siga.py
+
+P: Qual URL usar na VM Linux?
+R: Use o IP exibido quando rodar python siga.py
+   Ex: http://192.168.1.5:5001
+
+P: Firewall está bloqueando. Como permitir?
+R: Veja REDE_LOCAL.md na seção "Firewall do Windows"
+   Abra PowerShell como Administrador e execute o comando fornecido
+
+P: Como testar sem interface gráfica na VM?
+R: Use cURL: curl http://192.168.1.5:5001
+   Ou Python: requests.get('http://192.168.1.5:5001')
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 RESUMO DE ARQUIVOS:
+
+Total de Arquivos no Projeto: 21
+  • 5 arquivos Python
+  • 6 templates HTML
+  • 10 documentos markdown
+  • 1 .gitignore
+
+Tamanho Total: ~155 KB
+Status: ✅ COMPLETO E PRONTO PARA USO
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ TODAS AS ATUALIDADES IMPLEMENTADAS COM SUCESSO!
+
+A aplicação agora está completamente pronta para:
+  ✓ Aulas presenciais
+  ✓ Ataques via rede local
+  ✓ VMs Linux como atacantes
+  ✓ Testes de penetração realistas
+
+Desenvolvido por: AulasHack
+Data: 1º de Fevereiro de 2026
+Versão: 1.0 com Suporte a Rede Local
+
+═══════════════════════════════════════════════════════════════════════════════
+

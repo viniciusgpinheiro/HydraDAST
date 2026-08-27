@@ -1,0 +1,32 @@
+Estrutura Sugerida para Mini Curso de Pentest
+
+Módulo 1: Fundamentos e Ética (2-3 horas)
+O que é pentest e sua importância
+Aspectos legais e autorizações necessárias
+Código de ética do pentester
+Diferença entre hacking ético e malicioso
+Tipos de testes: black box, white box, gray box
+
+Módulo 2: Reconhecimento e Coleta de Informações (3-4 horas)
+OSINT (Open Source Intelligence)
+Enumeração de serviços e portas
+Ferramentas: Nmap, Shodan, TheHarvester
+Mapeamento de superfície de ataque
+
+Módulo 3: Análise de Vulnerabilidades (3-4 horas)
+OWASP Top 10
+Scanning de vulnerabilidades
+Ferramentas: Nessus, OpenVAS, Nikto
+Interpretação de resultados
+
+Módulo 4: Exploração Básica (4-5 horas)
+Conceitos de exploits
+Metasploit Framework (introdução)
+Vulnerabilidades web comuns (SQL Injection, XSS)
+Laboratórios práticos seguros (DVWA, HackTheBox)
+
+Módulo 5: Relatórios e Remediação (2-3 horas)
+Elaboração de relatórios técnicos
+Priorização de vulnerabilidades (CVSS)
+Recomendações de correção
+Comunicação com stakeholders
