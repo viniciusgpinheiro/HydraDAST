@@ -56,8 +56,6 @@ export const motores = [
   { key: 'special-chars___urlencoded', label: 'Special Chars (URL-encoded)', file: 'special-chars___urlencoded.txt' },
   { key: 'URI-hex', label: 'URI Hex', file: 'URI-hex.txt' },
   { key: 'Unicode', label: 'Unicode', file: 'Unicode.txt' },
-  { key: 'human-friendly', label: 'Human Friendly', file: 'human-friendly.txt' },
-  { key: 'robot-friendly', label: 'Robot Friendly', file: 'robot-friendly.txt' },
 ];
 
 // Etapas do pipeline (Progresso)
