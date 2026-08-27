@@ -270,8 +270,6 @@ ATTACK_CLASSIFICATION = {
     "FuzzingStrings-SkullSecurity_org.txt": execute_generic_fuzzing,
     "Unicode.txt": execute_generic_fuzzing,
     "fully-qualified-java-classes.txt": execute_generic_fuzzing,
-    "robot-friendly.txt": execute_generic_fuzzing,
-    "human-friendly.txt": execute_generic_fuzzing,
 }
 
 ENTRY_POINT_MAPPING = {

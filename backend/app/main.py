@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 
@@ -72,30 +73,65 @@ def _enviar_payload_real(payload_alvo: str, url_alvo: str, metodo: str = "POST")
     
     return status_code, corpo
 
-def _persistir_resultado(cur, tabela_resultado_nlp, id_teste, input_original, embedding, resultado_ia, resultado_analise):
+def _persistir_campo(cur, tabela_campos, id_teste, input_original, embedding, classificacao) -> int:
+    """Registra o campo detectado (1 linha por campo, não por ataque disparado
+    contra ele) e devolve o id, usado depois para ligar cada ataque ao campo
+    via ataques.id_campo."""
     embedding_literal = _to_pgvector_literal(embedding)
 
     conteudo_extraido = {
         "html_name": input_original.html_name,
         "html_id": input_original.html_id,
         "type": input_original.type,
-        "payload_id": resultado_ia["payload_id"],
-        "payload_usado": resultado_ia["payload"],
-        "categoria_ia": resultado_ia["categoria_ia"],
-        "distancia": resultado_ia["distancia"],
-        "classificacao": resultado_analise["classificacao"],
-        "recompensa": resultado_analise["recompensa"],
-        "status_code": resultado_analise["status_code"],
+        "parent_form_action": input_original.parent_form_action,
+        "parent_form_method": input_original.parent_form_method,
     }
 
     cur.execute(
         f"""
-        INSERT INTO {tabela_resultado_nlp}
+        INSERT INTO {tabela_campos}
         (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
         VALUES (%s, %s, %s::vector, %s)
+        RETURNING id
         """,
-        (id_teste, resultado_analise["classificacao"], embedding_literal, Json(conteudo_extraido)),
+        (id_teste, classificacao, embedding_literal, Json(conteudo_extraido)),
     )
+    return cur.fetchone()[0]
+
+
+def _persistir_ataque(cur, id_relatorio, id_campo, nome_campo, url_alvo, metodo, resultado_ia, resultado_exec, resultado_analise):
+    """Registra uma tentativa de ataque (1 payload disparado) contra um campo específico."""
+    query_str = json.dumps({"metodo": metodo, "corpo_enviado": {nome_campo: resultado_ia["payload"]}})
+    erro_str = resultado_exec.get("mensagem") if resultado_exec.get("erro") else None
+
+    cur.execute(
+        """
+        INSERT INTO ataques
+        (id_relatorio, id_campo, payload_id, url, metodo, query, payload, erro, tipo_ataque, risco, parametro)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            id_relatorio,
+            id_campo,
+            resultado_ia["payload_id"],
+            resultado_exec.get("url_final", url_alvo),
+            metodo,
+            query_str,
+            resultado_ia["payload"],
+            erro_str,
+            resultado_ia["categoria_ia"],
+            resultado_analise["classificacao"],
+            nome_campo,
+        ),
+    )
+
+
+def _rota_do_campo(input_original, url_base) -> tuple[str, str]:
+    """Identifica a 'rota HTTP' de um campo: a action do form (ou a própria URL
+    do teste, se o campo não estiver dentro de um form) + o método."""
+    action = input_original.parent_form_action or url_base
+    metodo = (input_original.parent_form_method or "GET").upper()
+    return (action, metodo)
 
 
 def main() -> None:

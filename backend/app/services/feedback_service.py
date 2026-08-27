@@ -27,16 +27,17 @@ class FeedbackService:
     def __init__(self, db_connection=None):
         self.conn = db_connection
 
-    def classificar_e_obter_payload_por_ia(self, vetor_nlp: list[float], limite_distancia: float = 0.8) -> dict | None:
-        """Busca o payload mais adequado combinando similaridade semântica + histórico de eficácia (RL)."""
-        if not self.conn:
-            return None
+    # score_confianca começa em 0.5 (neutro). PESO_RL controla o quanto o
+    # histórico de eficácia pesa vs. a similaridade semântica pura.
+    _PESO_RL = 0.15
+
+    def _buscar_payloads_rankeados(self, vetor_nlp: list[float], limit: int) -> list[dict]:
+        """Retorna até `limit` payloads de cache_payloads ordenados pela combinação
+        de similaridade semântica com o campo + score de eficácia (RL)."""
+        if not self.conn or limit <= 0:
+            return []
 
         vetor_str = "[" + ",".join(f"{float(x):.8f}" for x in vetor_nlp) + "]"
-
-        # score_confianca começa em 0.5 (neutro). PESO_RL controla o quanto o
-        # histórico de eficácia pesa vs. a similaridade semântica pura.
-        PESO_RL = 0.15
 
         query = """
             SELECT id, tipo_ataque, payload, score_confianca,
@@ -44,30 +45,48 @@ class FeedbackService:
             FROM public.cache_payloads
             WHERE embedding_semantico IS NOT NULL
             ORDER BY (embedding_semantico <=> %s::vector) - (%s * (score_confianca - 0.5)) ASC
-            LIMIT 1;
+            LIMIT %s;
         """
 
         try:
             with self.conn.cursor() as cursor:
-                cursor.execute(query, (vetor_str, vetor_str, PESO_RL))
-                resultado = cursor.fetchone()
-
-                if resultado:
-                    payload_id, tipo_ataque, payload, score_confianca, distancia = resultado
-                    distancia = float(distancia) if str(distancia) != 'nan' else 0.0
-
-                    if distancia <= limite_distancia:
-                        return {
-                            "payload_id": payload_id,
-                            "categoria_ia": tipo_ataque,
-                            "payload": payload,
-                            "score_confianca": float(score_confianca),
-                            "distancia": distancia
-                        }
-                return None
+                cursor.execute(query, (vetor_str, vetor_str, self._PESO_RL, limit))
+                linhas = cursor.fetchall()
         except Exception as e:
             logger.error(f"Erro na classificação por IA via pgvector: {e}")
-            return None
+            return []
+
+        resultados = []
+        for payload_id, tipo_ataque, payload, score_confianca, distancia in linhas:
+            distancia = float(distancia) if str(distancia) != 'nan' else 0.0
+            resultados.append({
+                "payload_id": payload_id,
+                "categoria_ia": tipo_ataque,
+                "payload": payload,
+                "score_confianca": float(score_confianca),
+                "distancia": distancia,
+            })
+        return resultados
+
+    def classificar_e_obter_payload_por_ia(self, vetor_nlp: list[float], limite_distancia: float = 0.8) -> dict | None:
+        """Busca o payload mais adequado combinando similaridade semântica + histórico de eficácia (RL)."""
+        candidatos = self._buscar_payloads_rankeados(vetor_nlp, limit=1)
+        if candidatos and candidatos[0]["distancia"] <= limite_distancia:
+            return candidatos[0]
+        return None
+
+    def escolher_top_n_payloads(self, vetor_nlp: list[float], n: int, limite_distancia: float = 0.8) -> list[dict]:
+        """Escolhe os `n` melhores ataques (dentre todos os payloads possíveis em
+        cache_payloads, o universo "i") para o campo representado por `vetor_nlp`.
+
+        Usado quando o orçamento de requisições daquela rota permite disparar
+        mais de um payload por campo: em vez de só o melhor (top-1), retorna
+        os `n` melhores já rankeados por similaridade semântica + eficácia (RL).
+        """
+        if n <= 0:
+            return []
+        candidatos = self._buscar_payloads_rankeados(vetor_nlp, limit=n)
+        return [c for c in candidatos if c["distancia"] <= limite_distancia]
 
     def calcular_recompensa(self, classificacao_resultado: str) -> int:
         """Retorna o score de Reinforcement Learning baseado no resultado obtido."""
