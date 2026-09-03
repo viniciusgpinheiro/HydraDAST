@@ -31,39 +31,54 @@ class FeedbackService:
     # histórico de eficácia pesa vs. a similaridade semântica pura.
     _PESO_RL = 0.15
 
-    def _buscar_payloads_rankeados(self, vetor_nlp: list[float], limit: int) -> list[dict]:
+    def _buscar_payloads_rankeados(
+        self, vetor_nlp: list[float], limit: int, categorias: Optional[set[str]] = None
+    ) -> list[dict]:
         """Retorna até `limit` payloads de cache_payloads ordenados pela combinação
-        de similaridade semântica com o campo + score de eficácia (RL)."""
+        de similaridade semântica com o campo + score de eficácia (RL).
+
+        `categorias`, se informado, restringe a busca a esse subconjunto de
+        `tipo_ataque` (ex.: o bucket de categorias do motor "sql" ou "xss") —
+        usado por `escolher_top_n_payloads` para escolher entre os "i"
+        ataques possíveis daquele bucket, não da tabela inteira."""
         if not self.conn or limit <= 0:
             return []
 
         vetor_str = "[" + ",".join(f"{float(x):.8f}" for x in vetor_nlp) + "]"
 
-        query = """
-            SELECT id, tipo_ataque, payload, score_confianca,
+        filtro_categoria = "AND tipo_ataque = ANY(%s)" if categorias else ""
+        query = f"""
+            SELECT id, tipo_ataque, payload, score_confianca, ponto_injecao,
                    (embedding_semantico <=> %s::vector) AS distancia
             FROM public.cache_payloads
             WHERE embedding_semantico IS NOT NULL
+            {filtro_categoria}
             ORDER BY (embedding_semantico <=> %s::vector) - (%s * (score_confianca - 0.5)) ASC
             LIMIT %s;
         """
 
+        parametros = [vetor_str]
+        if categorias:
+            parametros.append(list(categorias))
+        parametros += [vetor_str, self._PESO_RL, limit]
+
         try:
             with self.conn.cursor() as cursor:
-                cursor.execute(query, (vetor_str, vetor_str, self._PESO_RL, limit))
+                cursor.execute(query, parametros)
                 linhas = cursor.fetchall()
         except Exception as e:
             logger.error(f"Erro na classificação por IA via pgvector: {e}")
             return []
 
         resultados = []
-        for payload_id, tipo_ataque, payload, score_confianca, distancia in linhas:
+        for payload_id, tipo_ataque, payload, score_confianca, ponto_injecao, distancia in linhas:
             distancia = float(distancia) if str(distancia) != 'nan' else 0.0
             resultados.append({
                 "payload_id": payload_id,
                 "categoria_ia": tipo_ataque,
                 "payload": payload,
                 "score_confianca": float(score_confianca),
+                "ponto_injecao": ponto_injecao,
                 "distancia": distancia,
             })
         return resultados
@@ -75,9 +90,16 @@ class FeedbackService:
             return candidatos[0]
         return None
 
-    def escolher_top_n_payloads(self, vetor_nlp: list[float], n: int, limite_distancia: float = 0.8) -> list[dict]:
-        """Escolhe os `n` melhores ataques (dentre todos os payloads possíveis em
-        cache_payloads, o universo "i") para o campo representado por `vetor_nlp`.
+    def escolher_top_n_payloads(
+        self,
+        vetor_nlp: list[float],
+        n: int,
+        categorias: Optional[set[str]] = None,
+        limite_distancia: float = 0.8,
+    ) -> list[dict]:
+        """Escolhe os `n` melhores ataques (dentre os payloads possíveis em
+        cache_payloads — todo o universo "i", ou o bucket em `categorias`,
+        se informado) para o campo representado por `vetor_nlp`.
 
         Usado quando o orçamento de requisições daquela rota permite disparar
         mais de um payload por campo: em vez de só o melhor (top-1), retorna
@@ -85,7 +107,7 @@ class FeedbackService:
         """
         if n <= 0:
             return []
-        candidatos = self._buscar_payloads_rankeados(vetor_nlp, limit=n)
+        candidatos = self._buscar_payloads_rankeados(vetor_nlp, limit=n, categorias=categorias)
         return [c for c in candidatos if c["distancia"] <= limite_distancia]
 
     def calcular_recompensa(self, classificacao_resultado: str) -> int:

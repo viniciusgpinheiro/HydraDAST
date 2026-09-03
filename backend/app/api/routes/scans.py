@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.scan_runner import executar_scan, _normalizar_url
+from api.routes.config import _CONFIG
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
 
@@ -30,13 +31,16 @@ class ScanRequest(BaseModel):
     motores: Optional[list[str]] = None
 
 
-def _rodar_em_background(scan_id: str, url: str, motores: Optional[list[str]]):
+def _rodar_em_background(scan_id: str, url: str, motores: Optional[list[str]], limite_requisicoes: int):
     def _on_progress(snapshot: dict):
         with _LOCK:
             _SCANS[scan_id] = snapshot
 
     try:
-        final = executar_scan(url=url, motores=motores, on_progress=_on_progress, scan_id=scan_id)
+        final = executar_scan(
+            url=url, motores=motores, on_progress=_on_progress, scan_id=scan_id,
+            limite_requisicoes=limite_requisicoes,
+        )
         with _LOCK:
             _SCANS[scan_id] = final
     except Exception as e:  # noqa: BLE001 - queremos registrar qualquer falha no estado
@@ -72,8 +76,13 @@ def criar_scan(req: ScanRequest):
             "vulnerabilidades": [],
         }
 
+    # Item 2: usa o limite de requisições escolhido pelo usuário em
+    # Configurações no momento da criação do teste (snapshot, não afetado
+    # por uma mudança posterior na configuração global).
+    limite_requisicoes = _CONFIG.get("limiteRequisicoes", 100)
+
     thread = threading.Thread(
-        target=_rodar_em_background, args=(scan_id, url, req.motores), daemon=True
+        target=_rodar_em_background, args=(scan_id, url, req.motores, limite_requisicoes), daemon=True
     )
     thread.start()
 
