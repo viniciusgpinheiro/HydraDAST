@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse, urljoin
@@ -26,8 +27,11 @@ from services.feedback_service import FeedbackService
 from services.crawler import run_smart_crawler
 from services.ataques_exec import _requisicao_generica
 from services.llm_service import gerar_relatorio_llm
+from services.attack_categories import BUCKET_SQL, BUCKET_XSS, NOME_EXIBICAO, KB_POR_CATEGORIA, kb_generico
 
 load_dotenv()
+
+_LIMITE_REQUISICOES_PADRAO = 100
 
 _TIPOS_NAO_TESTAVEIS = {"submit", "button", "hidden", "reset", "image", "file"}
 
@@ -98,61 +102,148 @@ def _montar_corpo_formulario(campo, campos_do_form, payload_escolhido: str) -> d
     return corpo
 
 
-def _atacar_campo_real(url_base: str, contexto: dict, feedback: FeedbackService, categorias_alvo: set[str]):
-    """Escolhe o primeiro campo cuja classificação por IA bate com `categorias_alvo`
-    e dispara um ataque HTTP real nele. Retorna None se nada aplicável for encontrado
-    (banco fora do ar, nenhum campo compatível, falha de rede)."""
-    for item in contexto["campos"]:
-        campo = item["input_original"]
-        if not campo.html_name:
+def _orcamento_por_rota(numero_rotas: int, limite_requisicoes: int) -> int:
+    """n = limite de requisições do teste dividido pelo número de rotas
+    (item 2 do pedido). Esse orçamento é depois repartido entre os campos de
+    cada rota (uma rota com vários campos, ex. login com usuário+senha, não
+    multiplica o total de requisições)."""
+    return max(1, limite_requisicoes // max(1, numero_rotas))
+
+
+def _atacar_campos_multi(
+    url_base: str,
+    contexto: dict,
+    feedback: FeedbackService,
+    categorias_alvo: set[str],
+    limite_requisicoes: int,
+) -> list[dict]:
+    """Generaliza a versão anterior (que atacava só o 1º campo compatível com
+    1 payload top-1): percorre TODAS as rotas (grupos de campos por
+    form_action+method), calcula o orçamento de ataques por rota (`n` =
+    limite_requisicoes // número de rotas) repartido entre os campos
+    testáveis daquela rota, e pede à IA os `n` melhores payloads — dentre as
+    categorias de `categorias_alvo`, o universo "i" daquele bucket — para
+    cada campo (item 3 do pedido: `FeedbackService.escolher_top_n_payloads`).
+
+    Executa cada payload escolhido, classifica a resposta e atualiza o score
+    de RL. Retorna a lista de vulnerabilidades encontradas (pode ter mais de
+    uma por campo, ou nenhuma, se banco/crawler indisponíveis)."""
+    grupos = contexto["grupos"]
+    orcamento_rota = _orcamento_por_rota(len(grupos), limite_requisicoes)
+    emb_por_campo = {id(item["input_original"]): item["embedding"] for item in contexto["campos"]}
+
+    resultados: list[dict] = []
+    for campos_do_form in grupos.values():
+        campos_testaveis = [
+            c for c in campos_do_form
+            if c.html_name and (c.type or "").lower() not in _TIPOS_NAO_TESTAVEIS
+        ]
+        if not campos_testaveis:
             continue
+        orcamento_campo = max(1, orcamento_rota // len(campos_testaveis))
 
-        resultado_ia = feedback.classificar_e_obter_payload_por_ia(item["embedding"])
-        if not resultado_ia or resultado_ia["categoria_ia"] not in categorias_alvo:
-            continue
+        metodo_form = (campos_testaveis[0].parent_form_method or "GET").upper()
+        if metodo_form not in ("GET", "POST", "PUT"):
+            metodo_form = "POST"
+        acao_form = campos_testaveis[0].parent_form_action
+        alvo = urljoin(url_base, acao_form) if acao_form else url_base
 
-        chave_form = (campo.parent_form_action or "", (campo.parent_form_method or "GET").upper())
-        campos_do_form = contexto["grupos"].get(chave_form, [campo])
-        payload_usado = resultado_ia["payload"]
-        corpo = _montar_corpo_formulario(campo, campos_do_form, payload_usado)
+        for campo in campos_testaveis:
+            vetor = emb_por_campo.get(id(campo))
+            if vetor is None:
+                continue
 
-        metodo = (campo.parent_form_method or "GET").upper()
-        if metodo not in ("GET", "POST", "PUT"):
-            metodo = "POST"
-        injetar_em = "query" if metodo == "GET" else "body"
-        alvo = urljoin(url_base, campo.parent_form_action) if campo.parent_form_action else url_base
+            candidatos = feedback.escolher_top_n_payloads(vetor, orcamento_campo, categorias=categorias_alvo)
+            for candidato in candidatos:
+                payload_usado = candidato["payload"]
+                injetar_em = candidato.get("ponto_injecao") or ("query" if metodo_form == "GET" else "body")
 
-        resposta = _requisicao_generica(corpo, alvo, metodo, injetar_em=injetar_em)
-        if resposta.get("erro"):
-            continue
+                if injetar_em == "body":
+                    corpo = _montar_corpo_formulario(campo, campos_do_form, payload_usado)
+                    resposta = _requisicao_generica(corpo, alvo, metodo_form, injetar_em="body")
+                elif injetar_em == "query":
+                    resposta = _requisicao_generica(
+                        {campo.html_name: payload_usado}, alvo, metodo_form, injetar_em="query"
+                    )
+                else:
+                    resposta = _requisicao_generica(
+                        payload_usado, alvo, metodo_form, injetar_em=injetar_em, nome_campo=campo.html_name
+                    )
 
-        status_code = resposta.get("status_code", 0)
-        corpo_resposta = resposta.get("corpo", "") or ""
+                if resposta.get("erro"):
+                    continue
 
-        reflexao = payload_usado in corpo_resposta
-        if reflexao:
-            classificacao = "VULNERABILIDADE_CONFIRMADA"
-        else:
-            classificacao = feedback.analisar_resposta(
-                status_code, corpo_resposta, payload=payload_usado
-            )["classificacao"]
+                status_code = resposta.get("status_code", 0)
+                corpo_resposta = resposta.get("corpo", "") or ""
 
-        recompensa = feedback.calcular_recompensa(classificacao)
-        feedback.atualizar_score_confianca(resultado_ia["payload_id"], recompensa)
+                reflexao = payload_usado in corpo_resposta
+                if reflexao:
+                    classificacao = "VULNERABILIDADE_CONFIRMADA"
+                else:
+                    classificacao = feedback.analisar_resposta(
+                        status_code, corpo_resposta, payload=payload_usado
+                    )["classificacao"]
 
-        resposta_txt = f"{metodo} {_rota_de(alvo)} - {status_code}" + (
-            " (payload refletido)" if reflexao else ""
-        )
-        return {
-            "campo": campo.html_name,
-            "payload": payload_usado,
-            "categoria_ia": resultado_ia["categoria_ia"],
-            "classificacao": classificacao,
-            "resposta_txt": resposta_txt,
-            "url_alvo": alvo,
-            "metodo": metodo,
-        }
-    return None
+                recompensa = feedback.calcular_recompensa(classificacao)
+                feedback.atualizar_score_confianca(candidato["payload_id"], recompensa)
+
+                resposta_txt = f"{metodo_form} {_rota_de(alvo)} - {status_code}" + (
+                    " (payload refletido)" if reflexao else ""
+                )
+                resultados.append({
+                    "campo": campo.html_name,
+                    "payload": payload_usado,
+                    "categoria_ia": candidato["categoria_ia"],
+                    "classificacao": classificacao,
+                    "resposta_txt": resposta_txt,
+                    "url_alvo": alvo,
+                    "metodo": metodo_form,
+                })
+
+    return resultados
+
+
+def _persistir_orcamento_teste(conn, url: str, limite_requisicoes: int, numero_rotas: int, orcamento_por_rota: int) -> None:
+    """Guarda no banco o orçamento calculado para este teste (itens 2/3):
+    limite de requisições em vigor, quantas rotas foram detectadas e quantos
+    ataques por rota isso liberou. Descobre a tabela `testes` dinamicamente
+    pelas colunas da migração 003 (não há ORM neste projeto) e nunca derruba
+    o scan: se a migração ainda não rodou, ou a tabela tiver outra coluna
+    NOT NULL que este INSERT mínimo não preenche (ex.: id_usuario), a falha
+    é só logada."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
+            )
+            colunas_por_tabela: dict[str, set[str]] = {}
+            for tabela, coluna in cur.fetchall():
+                colunas_por_tabela.setdefault(tabela, set()).add(coluna)
+
+            necessarias = {"limite_requisicoes", "numero_rotas_detectadas", "orcamento_por_rota"}
+            tabela_testes = next(
+                (t for t, cols in colunas_por_tabela.items() if necessarias.issubset(cols)), None
+            )
+            if not tabela_testes or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", tabela_testes):
+                return
+
+            coluna_url = next(iter({"url", "url_alvo"} & colunas_por_tabela[tabela_testes]), None)
+
+            campos = ["limite_requisicoes", "numero_rotas_detectadas", "orcamento_por_rota"]
+            valores = [limite_requisicoes, numero_rotas, orcamento_por_rota]
+            if coluna_url:
+                campos.append(coluna_url)
+                valores.append(url)
+
+            placeholders = ", ".join(["%s"] * len(valores))
+            cur.execute(
+                f"INSERT INTO {tabela_testes} ({', '.join(campos)}) VALUES ({placeholders})",
+                valores,
+            )
+            conn.commit()
+    except Exception as e:  # noqa: BLE001 - nunca deve derrubar o scan
+        print(f"[scan_runner] Não foi possível registrar orçamento do teste (rode a migração 003?): {e}")
+        conn.rollback()
 
 
 # Mapeia a classificação do FeedbackService para o nível de risco exibido no front.
@@ -264,15 +355,30 @@ def _com_query(url: str, param: str, valor: str) -> str:
     return urlunparse(nova)
 
 
-def _executar_sql(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+def _kb_para_categoria(categoria_ia: str) -> dict:
+    """Texto de fallback (problema/solução/código) para uma categoria de
+    `cache_payloads.tipo_ataque`. As duas categorias antigas usam o texto já
+    existente em `_BASE_CONHECIMENTO`; as novas (item 1 do pedido) vêm de
+    `attack_categories.KB_POR_CATEGORIA`."""
+    if categoria_ia in ("credencial_senha", "credencial_identificador"):
+        return {**_BASE_CONHECIMENTO["sql"], "ataque": NOME_EXIBICAO.get(categoria_ia, "SQL Injection")}
+    if categoria_ia == "campo_generico":
+        return {**_BASE_CONHECIMENTO["xss"], "ataque": NOME_EXIBICAO.get(categoria_ia, "XSS")}
+    textos = KB_POR_CATEGORIA.get(categoria_ia)
+    if not textos:
+        return kb_generico(categoria_ia)
+    return {"ataque": NOME_EXIBICAO.get(categoria_ia, categoria_ia), **textos}
+
+
+def _executar_sql(
+    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+) -> list[dict]:
     kb = _BASE_CONHECIMENTO["sql"]
 
     if contexto:
-        smart = _atacar_campo_real(
-            url, contexto, feedback, {"credencial_senha", "credencial_identificador"}
-        )
-        if smart:
-            return _montar_vuln_ia("sql", kb, smart)
+        smarts = _atacar_campos_multi(url, contexto, feedback, BUCKET_SQL, limite_requisicoes)
+        if smarts:
+            return [_montar_vuln_ia("sql", _kb_para_categoria(s["categoria_ia"]), s) for s in smarts]
 
     # Fallback: nenhum campo de credencial encontrado/classificado -> payload fixo.
     alvo = _com_query(url, kb["parametro"], kb["payload"])
@@ -285,16 +391,18 @@ def _executar_sql(url: str, feedback: FeedbackService, contexto: dict | None = N
         analise = {"classificacao": "FALHA_GENERICA"}
         resposta_txt = f"Falha de rede: {e}"
         metodo = "GET"
-    return _montar_vuln("sql", kb, metodo, url, alvo, analise, resposta_txt)
+    return [_montar_vuln("sql", kb, metodo, url, alvo, analise, resposta_txt)]
 
 
-def _executar_xss(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+def _executar_xss(
+    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+) -> list[dict]:
     kb = _BASE_CONHECIMENTO["xss"]
 
     if contexto:
-        smart = _atacar_campo_real(url, contexto, feedback, {"campo_generico", "busca_pesquisa"})
-        if smart:
-            return _montar_vuln_ia("xss", kb, smart)
+        smarts = _atacar_campos_multi(url, contexto, feedback, BUCKET_XSS, limite_requisicoes)
+        if smarts:
+            return [_montar_vuln_ia("xss", _kb_para_categoria(s["categoria_ia"]), s) for s in smarts]
 
     # Fallback: nenhum campo genérico/busca encontrado -> payload fixo.
     alvo = _com_query(url, kb["parametro"], kb["payload"])
@@ -316,10 +424,12 @@ def _executar_xss(url: str, feedback: FeedbackService, contexto: dict | None = N
         classificacao = "FALHA_GENERICA"
         resposta_txt = f"Falha de rede: {e}"
         metodo = "GET"
-    return _montar_vuln("xss", kb, metodo, url, alvo, {"classificacao": classificacao}, resposta_txt)
+    return [_montar_vuln("xss", kb, metodo, url, alvo, {"classificacao": classificacao}, resposta_txt)]
 
 
-def _executar_header(url: str, feedback: FeedbackService, contexto: dict | None = None) -> dict:
+def _executar_header(
+    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+) -> list[dict]:
     kb = _BASE_CONHECIMENTO["header"]
     try:
         r = requests.get(url, timeout=8, headers={"User-Agent": "HydraDAST/1.0"})
@@ -336,7 +446,7 @@ def _executar_header(url: str, feedback: FeedbackService, contexto: dict | None 
         classificacao = "FALHA_GENERICA"
         resposta_txt = f"Falha de rede: {e}"
         metodo = "GET"
-    return _montar_vuln("header", kb, metodo, url, url, {"classificacao": classificacao}, resposta_txt)
+    return [_montar_vuln("header", kb, metodo, url, url, {"classificacao": classificacao}, resposta_txt)]
 
 
 def _texto_relatorio(kb, *, ataque, parametro, payload, metodo, url, resposta, classificacao) -> dict:
@@ -388,7 +498,11 @@ def _montar_vuln(vid, kb, metodo, url_base, url_alvo, analise, resposta_txt) -> 
 def _montar_vuln_ia(vid, kb, smart: dict) -> dict:
     """Mesmo formato de `_montar_vuln`, mas com o campo/payload/resposta reais
     escolhidos pelo pipeline de IA (crawler + NLP + pgvector + RL) em vez do
-    payload fixo da base de conhecimento."""
+    payload fixo da base de conhecimento.
+
+    Um único motor pode agora gerar várias vulnerabilidades (um por payload
+    escolhido pelo orçamento "n"), então o id precisa ser único por entrada
+    (o front usa `id` como chave de lista e para controlar o item aberto)."""
     risco = _CLASSIFICACAO_PARA_RISCO.get(smart["classificacao"], "Baixo")
     texto = _texto_relatorio(
         kb, ataque=kb["ataque"], parametro=smart["campo"], payload=smart["payload"],
@@ -396,7 +510,7 @@ def _montar_vuln_ia(vid, kb, smart: dict) -> dict:
         classificacao=smart["classificacao"],
     )
     return {
-        "id": vid,
+        "id": f"{vid}-{uuid.uuid4().hex[:8]}",
         "ataque": kb["ataque"],
         "metodo": smart["metodo"],
         "rota": _rota_de(smart["url_alvo"]),
@@ -441,13 +555,27 @@ def _snapshot(scan_id, url, status, etapas, vulnerabilidades):
     }
 
 
-def executar_scan(url: str, motores: list[str] | None = None, on_progress=None, scan_id=None, **_ignorados) -> dict:
+def executar_scan(
+    url: str,
+    motores: list[str] | None = None,
+    on_progress=None,
+    scan_id=None,
+    limite_requisicoes: int | None = None,
+    **_ignorados,
+) -> dict:
     """Executa os ataques selecionados, reportando o progresso etapa a etapa.
+
+    `limite_requisicoes` é o número máximo de requisições que o usuário
+    escolheu em Configurações para este teste (item 2 do pedido). É
+    dividido pelo número de rotas detectadas na página para virar o
+    orçamento `n` de ataques por rota/campo (item 2/3), guardado no banco
+    junto do teste quando o banco está disponível.
 
     Se `on_progress` for fornecido, ele é chamado com um snapshot completo do
     scan após cada etapa (para o polling do front). Retorna o relatório final.
     """
     url = _normalizar_url(url)
+    limite_requisicoes = limite_requisicoes or _LIMITE_REQUISICOES_PADRAO
     motores = [m for m in (motores or ["sql", "xss", "header"]) if m in _MOTORES]
     if not motores:
         motores = list(_MOTORES.keys())
@@ -476,13 +604,30 @@ def executar_scan(url: str, motores: list[str] | None = None, on_progress=None, 
     conn = _abrir_conexao_db()
     feedback = FeedbackService(db_connection=conn)
     contexto = _crawlear_contexto(url) if conn else None
+    if conn:
+        numero_rotas = len(contexto["grupos"]) if contexto else 1
+        orcamento_rota = _orcamento_por_rota(numero_rotas, limite_requisicoes)
+        _persistir_orcamento_teste(conn, url, limite_requisicoes, numero_rotas, orcamento_rota)
     _set("conexao", "done")
+
+    # "sql" e "xss" são os únicos motores que gastam do orçamento de
+    # cache_payloads; "header" faz sempre 1 requisição fixa e ignora o
+    # limite. Se os dois estiverem selecionados, cada um recalcularia o
+    # mesmo orçamento por rota a partir do limite total e, juntos,
+    # poderiam somar até o dobro do que o usuário escolheu — então o
+    # limite é dividido entre eles aqui para o total do teste respeitar
+    # de fato o limite_requisicoes configurado.
+    motores_com_orcamento = [m for m in motores if m in ("sql", "xss")]
+    limite_por_motor = (
+        max(1, limite_requisicoes // len(motores_com_orcamento)) if motores_com_orcamento else limite_requisicoes
+    )
 
     try:
         # Executa cada motor selecionado.
         for chave in motores:
             _set(chave, "running")
-            vulnerabilidades.append(_MOTORES[chave](url, feedback, contexto))
+            limite_motor = limite_por_motor if chave in ("sql", "xss") else limite_requisicoes
+            vulnerabilidades.extend(_MOTORES[chave](url, feedback, contexto, limite_motor))
             _set(chave, "done")
     finally:
         if conn:

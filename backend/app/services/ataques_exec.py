@@ -196,7 +196,10 @@ def _roteador_transporte(payload, url, metodo, usar_json, transporte, session, *
         # Se for browser, o payload vai ser injetado/testado no DOM
         return _analise_dom_browser(url, payload)
     else:
-        return _requisicao_generica(payload, url, metodo, usar_json=usar_json, session=session)
+        return _requisicao_generica(
+            payload, url, metodo, usar_json=usar_json, session=session,
+            injetar_em=kwargs.get("injetar_em", "body"), nome_campo=kwargs.get("nome_campo"),
+        )
 
 
 # --- Funções Wrapper Adaptadas ---
