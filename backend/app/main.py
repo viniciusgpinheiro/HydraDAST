@@ -126,6 +126,19 @@ def _persistir_ataque(cur, id_relatorio, id_campo, nome_campo, url_alvo, metodo,
     )
 
 
+def _persistir_resultado(cur, tabela_campos, id_teste, input_original, embedding, resultado_ia, resultado_analise) -> int:
+    """Registra o campo testado (via `_persistir_campo`) usando a classificação
+    final da resposta HTTP (`resultado_analise["classificacao"]`, ex.:
+    VULNERABILIDADE_CONFIRMADA/FALHA_GENERICA) como `classificacao_sugerida`.
+    `resultado_ia` não é persistido aqui: a categoria escolhida pela IA e o
+    payload usado já ficam no log do console; este script de demonstração
+    não cria uma linha em `ataques` (precisaria de um `id_relatorio`, que
+    este fluxo não gera)."""
+    return _persistir_campo(
+        cur, tabela_campos, id_teste, input_original, embedding, resultado_analise["classificacao"]
+    )
+
+
 def _rota_do_campo(input_original, url_base) -> tuple[str, str]:
     """Identifica a 'rota HTTP' de um campo: a action do form (ou a própria URL
     do teste, se o campo não estiver dentro de um form) + o método."""
