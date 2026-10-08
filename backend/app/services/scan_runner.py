@@ -195,13 +195,19 @@ def _atacar_campos_multi(
 
             # Pool mais largo que o orçamento: dá ao EfficacyModel o que
             # explorar entre categorias em vez de já chegar cortado em `n`.
+            # Com o modelo já treinado, o pool vem só por relevância semântica
+            # (apenas_semantico=True) — o score_confianca (RL) entra como
+            # *feature* do XGBoost, não mais como pré-filtro, senão payloads
+            # pouco testados nunca apareceriam pra ele aprender sobre eles.
+            modelo_pronto = bool(efficacy_model and efficacy_model.is_trained)
             pool = feedback.escolher_top_n_payloads(
-                vetor, max(orcamento_campo * 3, 10), categorias=categorias_alvo
+                vetor, max(orcamento_campo * 3, 10), categorias=categorias_alvo,
+                apenas_semantico=modelo_pronto,
             )
             if not pool:
                 continue
             candidatos = (
-                efficacy_model.escolher_n_melhores(pool, orcamento_campo, vetor)
+                efficacy_model.escolher_n_melhores(pool, orcamento_campo)
                 if efficacy_model else pool[:orcamento_campo]
             )
 

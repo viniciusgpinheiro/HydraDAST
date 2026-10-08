@@ -32,7 +32,11 @@ class FeedbackService:
     _PESO_RL = 0.15
 
     def _buscar_payloads_rankeados(
-        self, vetor_nlp: list[float], limit: int, categorias: Optional[set[str]] = None
+        self,
+        vetor_nlp: list[float],
+        limit: int,
+        categorias: Optional[set[str]] = None,
+        apenas_semantico: bool = False,
     ) -> list[dict]:
         """Retorna até `limit` payloads de cache_payloads ordenados pela combinação
         de similaridade semântica com o campo + score de eficácia (RL).
@@ -40,11 +44,19 @@ class FeedbackService:
         `categorias`, se informado, restringe a busca a esse subconjunto de
         `tipo_ataque` (ex.: o bucket de categorias do motor "sql" ou "xss") —
         usado por `escolher_top_n_payloads` para escolher entre os "i"
-        ataques possíveis daquele bucket, não da tabela inteira."""
+        ataques possíveis daquele bucket, não da tabela inteira.
+
+        `apenas_semantico=True` zera o peso do RL na ordenação (fica só a
+        distância pgvector). Usado quando quem chama (o EfficacyModel já
+        treinado) vai re-rankear o resultado por conta própria usando
+        `score_confianca` como *feature* de entrada — sem isso, o pool já
+        viria pré-enviesado pro que o RL simples já favorecia, e o XGBoost
+        nunca teria chance de aprender sobre payloads pouco testados ainda."""
         if not self.conn or limit <= 0:
             return []
 
         vetor_str = "[" + ",".join(f"{float(x):.8f}" for x in vetor_nlp) + "]"
+        peso_rl = 0.0 if apenas_semantico else self._PESO_RL
 
         filtro_categoria = "AND tipo_ataque = ANY(%s)" if categorias else ""
         query = f"""
@@ -60,7 +72,7 @@ class FeedbackService:
         parametros = [vetor_str]
         if categorias:
             parametros.append(list(categorias))
-        parametros += [vetor_str, self._PESO_RL, limit]
+        parametros += [vetor_str, peso_rl, limit]
 
         try:
             with self.conn.cursor() as cursor:
@@ -96,6 +108,7 @@ class FeedbackService:
         n: int,
         categorias: Optional[set[str]] = None,
         limite_distancia: float = 0.8,
+        apenas_semantico: bool = False,
     ) -> list[dict]:
         """Escolhe os `n` melhores ataques (dentre os payloads possíveis em
         cache_payloads — todo o universo "i", ou o bucket em `categorias`,
@@ -103,11 +116,15 @@ class FeedbackService:
 
         Usado quando o orçamento de requisições daquela rota permite disparar
         mais de um payload por campo: em vez de só o melhor (top-1), retorna
-        os `n` melhores já rankeados por similaridade semântica + eficácia (RL).
+        os `n` melhores já rankeados por similaridade semântica + eficácia (RL)
+        — ou só por similaridade semântica se `apenas_semantico=True` (ver
+        `_buscar_payloads_rankeados`).
         """
         if n <= 0:
             return []
-        candidatos = self._buscar_payloads_rankeados(vetor_nlp, limit=n, categorias=categorias)
+        candidatos = self._buscar_payloads_rankeados(
+            vetor_nlp, limit=n, categorias=categorias, apenas_semantico=apenas_semantico
+        )
         return [c for c in candidatos if c["distancia"] <= limite_distancia]
 
     def calcular_recompensa(self, classificacao_resultado: str) -> int:
