@@ -1,6 +1,32 @@
 import random
+
 import numpy as np
 import xgboost as xgb
+
+from services.attack_categories import NOME_EXIBICAO
+
+# Ordem fixa das categorias pra codificação one-hot — precisa ser estável
+# entre treino e inferência (senão a posição de cada coluna muda de
+# significado). Vem do catálogo central de categorias (item 1 do pedido).
+CATEGORIAS_CONHECIDAS = sorted(NOME_EXIBICAO.keys())
+
+
+def _parsear_vetor(valor) -> list[float] | None:
+    """`embedding_semantico` volta do psycopg2 como string pgvector
+    ("[0.1,0.2,...]") quando o adapter da extensão não está registrado, ou
+    como sequência já pronta caso esteja. Aceita os dois formatos."""
+    if valor is None:
+        return None
+    if isinstance(valor, str):
+        try:
+            return [float(x) for x in valor.strip("[]").split(",") if x]
+        except ValueError:
+            return None
+    try:
+        return [float(x) for x in valor]
+    except TypeError:
+        return None
+
 
 class EfficacyModel:
     def __init__(self, epsilon=0.2):
@@ -8,163 +34,137 @@ class EfficacyModel:
         self.model = xgb.XGBClassifier(objective='binary:logistic')
         self.is_trained = False
 
-    def _preparar_input_xgboost(self, features_payload: list, embedding_campo: list) -> np.array:
-        #Exemplos:
-        #features_payload: [12, 1, 0, 1, 0] (len: 5)
-        #embedding_campo: [0.123, -0.456, ..., 0.012] (len: 384)
-
-        # Aí junta ambos num único array linear de 389 posições
-        vetor_multimodal = features_payload + embedding_campo
-        return np.array(vetor_multimodal)
-
-    def _extrair_features_payload(self, payload: str, embedding_campo: list) -> list:
+    def _extrair_features_payload(self, payload: str, categoria_ia: str, embedding_campo: list) -> np.array:
         tamanho = len(payload)
         qtd_aspa_simples = payload.count("'")
         qtd_tags_html = payload.count("<") + payload.count(">")
         tem_sql = 1 if any(word in payload.upper() for word in ["OR", "SELECT", "UNION", "--"]) else 0
         tem_script = 1 if "script" in payload.lower() else 0
 
-        return self._preparar_input_xgboost(
-            features_payload=[tamanho, 
-             qtd_aspa_simples, 
-             qtd_tags_html, 
-             tem_sql, 
-             tem_script], 
-             embedding_campo=embedding_campo
-             )
-    
-    def escolher_melhor_payload(self, payloads: list, embedding_campo: list) -> str:
-        # aplica epsilon-greedy
-        if not self.is_trained or random.random() < self.epsilon:
-            print("[Epsilon-Greedy] Escolhendo payload aleatório")
-            return random.choice(payloads)
-        
-        print("[Epsilon-Greedy] Escolhendo payload com maior eficácia prevista")
+        # Categoria como one-hot: o payload sozinho não diz se é um ataque
+        # de LFI ou de Format String, por exemplo — a categoria escolhida
+        # pelo pgvector/arsenal é o que diferencia esses casos.
+        one_hot_categoria = [1.0 if categoria_ia == c else 0.0 for c in CATEGORIAS_CONHECIDAS]
 
-        # escolhe o payload com maior eficácia prevista
-        matriz_features = []
-        for payload in payloads:
-            features = self._extrair_features_payload(payload, embedding_campo)
-            matriz_features.append(features)
+        vetor_multimodal = (
+            [tamanho, qtd_aspa_simples, qtd_tags_html, tem_sql, tem_script]
+            + one_hot_categoria
+            + list(embedding_campo)
+        )
+        return np.array(vetor_multimodal, dtype=float)
 
-        X_pred = np.array(matriz_features)
+    def escolher_n_melhores(self, candidatos: list[dict], n: int, embedding_campo: list) -> list[dict]:
+        """Escolhe até `n` dentre `candidatos` (dicts com ao menos 'payload' e
+        'categoria_ia' — normalmente já pré-filtrados pelo pgvector dentre o
+        bucket de categorias do motor) via epsilon-greedy sem reposição: cada
+        sorteio tem `epsilon` de chance de vir de uma categoria aleatória
+        (exploração) e (1-epsilon) de vir da maior eficácia prevista pelo
+        XGBoost (exploração guiada pelo histórico real de sucesso/falha).
 
-        previsoes = self.model.predict_proba(X_pred)
-        
-        scores = previsoes[:, 1]  # Probabilidade de ser eficaz (classe positiva)
+        Sem modelo treinado ainda (histórico insuficiente em `ataques`), cai
+        para a ordem de entrada de `candidatos` (que já vem rankeada por
+        similaridade semântica + score de RL) em vez de sorteio puramente
+        aleatório — mantém a qualidade atual enquanto o XGBoost não tem dado
+        suficiente pra ser confiável."""
+        if n <= 0 or not candidatos:
+            return []
+        if not self.is_trained:
+            return candidatos[:n]
 
-        melhor = np.argmax(scores)
+        restantes = list(candidatos)
+        escolhidos = []
+        while restantes and len(escolhidos) < n:
+            if random.random() < self.epsilon:
+                idx = random.randrange(len(restantes))
+            else:
+                matriz = np.array([
+                    self._extrair_features_payload(c["payload"], c["categoria_ia"], embedding_campo)
+                    for c in restantes
+                ])
+                scores = self.model.predict_proba(matriz)[:, 1]
+                idx = int(np.argmax(scores))
+            escolhidos.append(restantes.pop(idx))
+        return escolhidos
 
-        return payloads[melhor]
-    
     def treinar_modelo(self, X_treino: np.array, y_treino: np.array):
         if len(X_treino) > 0:
             self.model.fit(X_treino, y_treino)
             self.is_trained = True
             print("[XGBoost] Modelo de eficácia treinado com sucesso!")
 
+    def treinar_de_historico(self, conn, minimo_exemplos: int = 10) -> bool:
+        """Treina com o histórico real da tabela `ataques` (Neon), juntando
+        com o embedding do campo atacado via `componentes_web.id_componente`.
+        Precisa de pelo menos `minimo_exemplos` linhas e das duas classes
+        (sucesso e falha) representadas — senão não treina (`is_trained`
+        continua False) e quem chama cai no fallback do pgvector/RL."""
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT a.payload_usado, a.tipo_ataque, cw.embedding_semantico, a.sucesso
+                    FROM ataques a
+                    JOIN componentes_web cw ON cw.id = a.id_componente
+                    WHERE cw.embedding_semantico IS NOT NULL AND a.payload_usado IS NOT NULL
+                    """
+                )
+                linhas = cur.fetchall()
+        except Exception as e:  # noqa: BLE001 - treino é best-effort, nunca derruba o scan
+            print(f"[EfficacyModel] Não foi possível ler o histórico de ataques: {e}")
+            return False
+
+        if len(linhas) < minimo_exemplos:
+            return False
+
+        X, y = [], []
+        for payload_usado, tipo_ataque, embedding_raw, sucesso in linhas:
+            embedding = _parsear_vetor(embedding_raw)
+            if embedding is None:
+                continue
+            X.append(self._extrair_features_payload(payload_usado, tipo_ataque or "", embedding))
+            y.append(1 if sucesso else 0)
+
+        if len(set(y)) < 2:
+            # XGBoost precisa de exemplos das duas classes pra ter o que aprender.
+            return False
+
+        self.treinar_modelo(np.array(X), np.array(y))
+        return self.is_trained
+
+
 if __name__ == "__main__":
-    # =========================================================================
-    # CONFIGURAÇÃO DO TESTE: Escolha o cenário mudando o número (1, 2 ou 3)
-    # =========================================================================
-    CENARIO_ATIVO = 1
-    
-    # Instancia a IA com Epsilon baixo (0.1) para que ela use mais o XGBoost (90%) 
-    # e faça menos escolhas aleatórias, facilitando a visualização do aprendizado.
+    # Demo standalone (não roda no pipeline de scan): simula um histórico
+    # onde SQLi funcionou bem em login e XSS funcionou bem em busca, e
+    # mostra a IA aprendendo a diferenciar os dois contextos.
     modelo = EfficacyModel(epsilon=0.1)
-    
-    # Nosso arsenal de teste reduzido
-    payloads_teste = [
-        "' OR '1'='1",                      # SQL Injection genérico
-        "<script>alert(1)</script>",         # XSS clássico
-        "../../etc/passwd",                  # Path Traversal / LFI
-        "normal_input_sem_ataque"            # Input limpo
+
+    embedding_login = [-0.2] * 384
+    embedding_busca = [0.1] * 384
+
+    candidatos_treino = [
+        ("' OR '1'='1", "sqli", embedding_login, 1),
+        ("<script>alert(1)</script>", "xss", embedding_login, 0),
+        ("<script>alert(1)</script>", "xss", embedding_busca, 1),
+        ("' OR '1'='1", "sqli", embedding_busca, 0),
+    ] * 5  # repete pra dar volume mínimo de treino
+
+    X = np.array([
+        modelo._extrair_features_payload(payload, categoria, emb)
+        for payload, categoria, emb, _ in candidatos_treino
+    ])
+    y = np.array([sucesso for _, _, _, sucesso in candidatos_treino])
+    modelo.treinar_modelo(X, y)
+
+    candidatos_teste = [
+        {"payload": "' OR '1'='1", "categoria_ia": "sqli"},
+        {"payload": "<script>alert(1)</script>", "categoria_ia": "xss"},
+        {"payload": "../../etc/passwd", "categoria_ia": "lfi_path_traversal"},
     ]
-    
-    # Criando 2 tipos de páginas/campos falsos (Embeddings simulados)
-    embedding_campo_busca = [0.1] * 384
-    embedding_campo_login = [-0.2] * 384
 
-    print(f"=== INICIANDO SIMULAÇÃO: CENÁRIO {CENARIO_ATIVO} ===")
+    print("\n[Resultado] Campo de LOGIN, pedindo os 2 melhores:")
+    for c in modelo.escolher_n_melhores(candidatos_teste, 2, embedding_login):
+        print(f"  -> {c['categoria_ia']}: {c['payload']}")
 
-    # -------------------------------------------------------------------------
-    # CENÁRIO 1: O Especialista em SQLi (Foco em bypass de login)
-    # Objetivo: Ensinar à IA que em campos de LOGIN, payloads SQL funcionam muito.
-    # -------------------------------------------------------------------------
-    if CENARIO_ATIVO == 1:
-        print("[Config] Simulando histórico onde SQL Injection dominou o campo de Login.\n")
-        
-        # Extrai features combinando o payload com o contexto de login
-        f_sqli = modelo._extrair_features_payload("' OR '1'='1", embedding_campo_login)
-        f_xss  = modelo._extrair_features_payload("<script>alert(1)</script>", embedding_campo_login)
-        f_limpo = modelo._extrair_features_payload("normal_input_sem_ataque", embedding_campo_login)
-        
-        X_treino = np.array([f_sqli, f_xss, f_limpo])
-        y_treino = np.array([1, 0, 0])  # Apenas o SQLi teve sucesso (1)
-        
-        modelo.treinar_modelo(X_treino, y_treino)
-        
-        print("\n[Resultado] Testando 5 vezes a decisão da IA para o campo de LOGIN:")
-        for i in range(5):
-            escolhido = modelo.escolher_melhor_payload(payloads_teste, embedding_campo_login)
-            print(f"  Tentativa {i+1}: {escolhido}")
-
-    # -------------------------------------------------------------------------
-    # CENÁRIO 2: O Caçador de XSS (Foco em campos de busca/pesquisa)
-    # Objetivo: Ensinar à IA que em campos de BUSCA, payloads de script dão mais certo.
-    # -------------------------------------------------------------------------
-    elif CENARIO_ATIVO == 2:
-        print("[Config] Simulando histórico onde Cross-Site Scripting (XSS) dominou na Busca.\n")
-        
-        f_sqli = modelo._extrair_features_payload("' OR '1'='1", embedding_campo_busca)
-        f_xss  = modelo._extrair_features_payload("<script>alert(1)</script>", embedding_campo_busca)
-        f_lfi  = modelo._extrair_features_payload("../../etc/passwd", embedding_campo_busca)
-        
-        X_treino = np.array([f_sqli, f_xss, f_lfi])
-        y_treino = np.array([0, 1, 0])  # Apenas o XSS teve sucesso (1)
-        
-        modelo.treinar_modelo(X_treino, y_treino)
-        
-        print("\n[Resultado] Testando 5 vezes a decisão da IA para o campo de BUSCA:")
-        for i in range(5):
-            escolhido = modelo.escolher_melhor_payload(payloads_teste, embedding_campo_busca)
-            print(f"  Tentativa {i+1}: {escolhido}")
-
-    # -------------------------------------------------------------------------
-    # CENÁRIO 3: Aprendizado em Larga Escala (O Modelo Maduro)
-    # Objetivo: Simular um banco com MUITOS dados mistos (20 ataques passados).
-    # A IA deve ser capaz de diferenciar o alvo: SQLi no Login e XSS na Busca.
-    # -------------------------------------------------------------------------
-    elif CENARIO_ATIVO == 3:
-        print("[Config] Simulando Big Data: 20 registros coletados em auditorias passadas.\n")
-        
-        X_lista = []
-        y_lista = []
-        
-        # Gerando dados em massa para o modelo consolidar o padrão
-        for _ in range(10):
-            # No login, SQLi funciona
-            X_lista.append(modelo._extrair_features_payload("' OR '1'='1", embedding_campo_login))
-            y_lista.append(1)
-            # No login, XSS falha
-            X_lista.append(modelo._extrair_features_payload("<script>alert(1)</script>", embedding_campo_login))
-            y_lista.append(0)
-            
-            # Na busca, XSS funciona
-            X_lista.append(modelo._extrair_features_payload("<script>alert(1)</script>", embedding_campo_busca))
-            y_lista.append(1)
-            # Na busca, SQLi falha
-            X_lista.append(modelo._extrair_features_payload("' OR '1'='1", embedding_campo_busca))
-            y_lista.append(0)
-            
-        X_treino = np.array(X_lista)
-        y_treino = np.array(y_lista)
-        
-        modelo.treinar_modelo(X_treino, y_treino)
-        
-        print("\n[Resultado] Testando a flexibilidade da IA em tempo real:")
-        escolha_login = modelo.escolher_melhor_payload(payloads_teste, embedding_campo_login)
-        print(f"  -> Para o campo de LOGIN, a IA escolheu: {escolha_login}")
-        
-        escolha_busca = modelo.escolher_melhor_payload(payloads_teste, embedding_campo_busca)
-        print(f"  -> Para o campo de BUSCA, a IA escolheu: {escolha_busca}")
+    print("\n[Resultado] Campo de BUSCA, pedindo os 2 melhores:")
+    for c in modelo.escolher_n_melhores(candidatos_teste, 2, embedding_busca):
+        print(f"  -> {c['categoria_ia']}: {c['payload']}")

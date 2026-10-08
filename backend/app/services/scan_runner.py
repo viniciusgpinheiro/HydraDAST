@@ -15,18 +15,20 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
+import time
 import uuid
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse, urljoin
 
 import requests
 from dotenv import load_dotenv
+from psycopg2.extras import Json
 
 from services.feedback_service import FeedbackService
 from services.crawler import run_smart_crawler
 from services.ataques_exec import _requisicao_generica
 from services.llm_service import gerar_relatorio_llm
+from services.efficacy_model import EfficacyModel
 from services.attack_categories import BUCKET_SQL, BUCKET_XSS, NOME_EXIBICAO, KB_POR_CATEGORIA, kb_generico
 
 load_dotenv()
@@ -36,6 +38,7 @@ _LIMITE_REQUISICOES_PADRAO = 100
 _TIPOS_NAO_TESTAVEIS = {"submit", "button", "hidden", "reset", "image", "file"}
 
 _nlp_singleton = None
+_efficacy_singleton: EfficacyModel | None = None
 
 
 def _get_nlp():
@@ -49,6 +52,25 @@ def _get_nlp():
             print(f"[scan_runner] NLP indisponível, motores usarão o modo fixo: {e}")
             _nlp_singleton = False
     return _nlp_singleton or None
+
+
+def _get_efficacy_model(conn) -> EfficacyModel:
+    """Reaproveita a instância do EfficacyModel (XGBoost) entre scans, mas
+    retreina a cada scan com o histórico mais recente de `ataques` — ao
+    contrário do NLP (pesado de carregar), treinar nesse volume de dados é
+    rápido, então não há necessidade de cache do treino em si.
+
+    Sem histórico suficiente (menos de `minimo_exemplos` linhas, ou só uma
+    classe representada), o modelo continua com `is_trained=False` e quem
+    chama (`_atacar_campos_multi`) cai de volta pro ranking do pgvector/RL."""
+    global _efficacy_singleton
+    if _efficacy_singleton is None:
+        _efficacy_singleton = EfficacyModel()
+    try:
+        _efficacy_singleton.treinar_de_historico(conn)
+    except Exception as e:  # noqa: BLE001 - treino é best-effort
+        print(f"[scan_runner] Treino do EfficacyModel falhou, mantendo fallback pgvector/RL: {e}")
+    return _efficacy_singleton
 
 
 def _abrir_conexao_db():
@@ -92,6 +114,10 @@ def _crawlear_contexto(url: str):
     return {"campos": campos_com_vetor, "grupos": grupos}
 
 
+def _to_pgvector_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(f"{float(x):.8f}" for x in embedding) + "]"
+
+
 def _montar_corpo_formulario(campo, campos_do_form, payload_escolhido: str) -> dict:
     corpo = {}
     for c in campos_do_form:
@@ -116,21 +142,35 @@ def _atacar_campos_multi(
     feedback: FeedbackService,
     categorias_alvo: set[str],
     limite_requisicoes: int,
+    conn=None,
+    efficacy_model: EfficacyModel | None = None,
+    id_teste: str | None = None,
+    id_relatorio: str | None = None,
 ) -> list[dict]:
     """Generaliza a versão anterior (que atacava só o 1º campo compatível com
     1 payload top-1): percorre TODAS as rotas (grupos de campos por
     form_action+method), calcula o orçamento de ataques por rota (`n` =
     limite_requisicoes // número de rotas) repartido entre os campos
-    testáveis daquela rota, e pede à IA os `n` melhores payloads — dentre as
-    categorias de `categorias_alvo`, o universo "i" daquele bucket — para
-    cada campo (item 3 do pedido: `FeedbackService.escolher_top_n_payloads`).
+    testáveis daquela rota.
 
-    Executa cada payload escolhido, classifica a resposta e atualiza o score
-    de RL. Retorna a lista de vulnerabilidades encontradas (pode ter mais de
-    uma por campo, ou nenhuma, se banco/crawler indisponíveis)."""
+    Para cada campo, o pgvector primeiro filtra um pool mais largo de
+    candidatos (até o universo "i" de `categorias_alvo`), e o EfficacyModel
+    (XGBoost) escolhe os `n` dali — por epsilon-greedy, variando entre
+    categorias — quando já tem histórico treinado; sem histórico, cai para
+    os `n` primeiros do pool já rankeado por similaridade semântica + RL
+    (`FeedbackService.escolher_top_n_payloads`), igual ao comportamento
+    anterior. Isso é o item 3 do pedido original: a IA escolhendo os `n`
+    melhores ataques por campo dentre os "i" possíveis.
+
+    Executa cada payload escolhido, classifica a resposta, atualiza o score
+    de RL e persiste o campo + cada ataque no banco (quando `conn`/`id_teste`
+    estão disponíveis) para alimentar o próximo treino do EfficacyModel.
+    Retorna a lista de vulnerabilidades encontradas (pode ter mais de uma
+    por campo, ou nenhuma, se banco/crawler indisponíveis)."""
     grupos = contexto["grupos"]
     orcamento_rota = _orcamento_por_rota(len(grupos), limite_requisicoes)
     emb_por_campo = {id(item["input_original"]): item["embedding"] for item in contexto["campos"]}
+    pode_persistir = bool(conn and id_teste and id_relatorio)
 
     resultados: list[dict] = []
     for campos_do_form in grupos.values():
@@ -153,24 +193,69 @@ def _atacar_campos_multi(
             if vetor is None:
                 continue
 
-            candidatos = feedback.escolher_top_n_payloads(vetor, orcamento_campo, categorias=categorias_alvo)
+            # Pool mais largo que o orçamento: dá ao EfficacyModel o que
+            # explorar entre categorias em vez de já chegar cortado em `n`.
+            pool = feedback.escolher_top_n_payloads(
+                vetor, max(orcamento_campo * 3, 10), categorias=categorias_alvo
+            )
+            if not pool:
+                continue
+            candidatos = (
+                efficacy_model.escolher_n_melhores(pool, orcamento_campo, vetor)
+                if efficacy_model else pool[:orcamento_campo]
+            )
+
+            id_componente = None
+            if pode_persistir:
+                try:
+                    with conn.cursor() as cur:
+                        id_componente = _persistir_campo(
+                            cur, id_teste, campo, vetor,
+                            candidatos[0]["categoria_ia"] if candidatos else "desconhecida",
+                        )
+                    conn.commit()
+                except Exception as e:  # noqa: BLE001 - persistência é best-effort
+                    print(f"[scan_runner] Não foi possível registrar o campo '{campo.html_name}': {e}")
+                    conn.rollback()
+
             for candidato in candidatos:
                 payload_usado = candidato["payload"]
                 injetar_em = candidato.get("ponto_injecao") or ("query" if metodo_form == "GET" else "body")
 
+                parametros_enviados: dict
                 if injetar_em == "body":
-                    corpo = _montar_corpo_formulario(campo, campos_do_form, payload_usado)
-                    resposta = _requisicao_generica(corpo, alvo, metodo_form, injetar_em="body")
+                    parametros_enviados = _montar_corpo_formulario(campo, campos_do_form, payload_usado)
+                    inicio = time.perf_counter()
+                    resposta = _requisicao_generica(parametros_enviados, alvo, metodo_form, injetar_em="body")
                 elif injetar_em == "query":
-                    resposta = _requisicao_generica(
-                        {campo.html_name: payload_usado}, alvo, metodo_form, injetar_em="query"
-                    )
+                    parametros_enviados = {campo.html_name: payload_usado}
+                    inicio = time.perf_counter()
+                    resposta = _requisicao_generica(parametros_enviados, alvo, metodo_form, injetar_em="query")
                 else:
+                    parametros_enviados = {campo.html_name: payload_usado}
+                    inicio = time.perf_counter()
                     resposta = _requisicao_generica(
                         payload_usado, alvo, metodo_form, injetar_em=injetar_em, nome_campo=campo.html_name
                     )
+                tempo_resposta_ms = (time.perf_counter() - inicio) * 1000
 
                 if resposta.get("erro"):
+                    if id_componente and pode_persistir:
+                        try:
+                            with conn.cursor() as cur:
+                                _persistir_ataque(
+                                    cur, id_relatorio=id_relatorio, id_componente=id_componente,
+                                    categoria_ia=candidato["categoria_ia"], payload_id=candidato.get("payload_id"),
+                                    payload_usado=payload_usado, metodo_http=metodo_form,
+                                    parametros_query=parametros_enviados, sucesso=False, status_code=None,
+                                    mensagem_erro=resposta.get("mensagem"), tempo_resposta_ms=tempo_resposta_ms,
+                                    risco="Baixo", recompensa_rl=0.0, descricao_falha="Falha de rede",
+                                    sugestao_correcao="",
+                                )
+                            conn.commit()
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[scan_runner] Não foi possível registrar ataque com falha de rede: {e}")
+                            conn.rollback()
                     continue
 
                 status_code = resposta.get("status_code", 0)
@@ -200,50 +285,129 @@ def _atacar_campos_multi(
                     "metodo": metodo_form,
                 })
 
+                if id_componente and pode_persistir:
+                    kb = _kb_para_categoria(candidato["categoria_ia"])
+                    risco = _CLASSIFICACAO_PARA_RISCO.get(classificacao, "Baixo")
+                    sucesso = classificacao in ("VULNERABILIDADE_CONFIRMADA", "SUCESSO_BYPASS")
+                    try:
+                        with conn.cursor() as cur:
+                            _persistir_ataque(
+                                cur, id_relatorio=id_relatorio, id_componente=id_componente,
+                                categoria_ia=candidato["categoria_ia"], payload_id=candidato.get("payload_id"),
+                                payload_usado=payload_usado, metodo_http=metodo_form,
+                                parametros_query=parametros_enviados, sucesso=sucesso, status_code=status_code,
+                                mensagem_erro=None, tempo_resposta_ms=tempo_resposta_ms, risco=risco,
+                                recompensa_rl=float(recompensa), descricao_falha=resposta_txt,
+                                sugestao_correcao=kb.get("solucao", ""),
+                            )
+                        conn.commit()
+                    except Exception as e:  # noqa: BLE001 - persistência é best-effort
+                        print(f"[scan_runner] Não foi possível registrar ataque: {e}")
+                        conn.rollback()
+
     return resultados
 
 
-def _persistir_orcamento_teste(conn, url: str, limite_requisicoes: int, numero_rotas: int, orcamento_por_rota: int) -> None:
-    """Guarda no banco o orçamento calculado para este teste (itens 2/3):
-    limite de requisições em vigor, quantas rotas foram detectadas e quantos
-    ataques por rota isso liberou. Descobre a tabela `testes` dinamicamente
-    pelas colunas da migração 003 (não há ORM neste projeto) e nunca derruba
-    o scan: se a migração ainda não rodou, ou a tabela tiver outra coluna
-    NOT NULL que este INSERT mínimo não preenche (ex.: id_usuario), a falha
-    é só logada."""
+def _obter_ou_criar_usuario(cur) -> str:
+    """Usuário "sistema" padrão: o projeto ainda não tem autenticação, então
+    todo teste fica ligado a este único usuário (mesma convenção usada no
+    script de demonstração antigo)."""
+    nome = os.getenv("HYDRA_USER_NOME", "Usuário Padrão HydraDAST")
+    email = os.getenv("HYDRA_USER_EMAIL", "sistema@hydradast.local")
+    senha_hash = os.getenv("HYDRA_USER_SENHA_HASH", "hash_nao_aplicavel")
+    chave_api = os.getenv("HYDRA_USER_API_KEY", "")
+    cur.execute(
+        """
+        INSERT INTO usuarios (nome, email, senha_hash, chave_api)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (email) DO UPDATE SET nome = EXCLUDED.nome
+        RETURNING id
+        """,
+        (nome, email, senha_hash, chave_api),
+    )
+    return cur.fetchone()[0]
+
+
+def _criar_teste_e_relatorio(cur, url: str, limite_requisicoes: int, numero_rotas: int, orcamento_por_rota: int):
+    """Cria as linhas de `testes` e `relatorios` para este scan (itens 2/3:
+    guarda o limite de requisições em vigor e o orçamento calculado a partir
+    dele) e devolve (id_teste, id_relatorio). `relatorios.risco_geral` só é
+    conhecido ao final do scan, então começa vazio e é atualizado por
+    `_finalizar_teste`."""
+    id_usuario = _obter_ou_criar_usuario(cur)
+    cur.execute(
+        """
+        INSERT INTO testes
+        (id_usuario, url_alvo, status, limite_requisicoes, numero_rotas_detectadas, orcamento_por_rota)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (id_usuario, url, "em_andamento", limite_requisicoes, numero_rotas, orcamento_por_rota),
+    )
+    id_teste = cur.fetchone()[0]
+
+    cur.execute("INSERT INTO relatorios (id_teste) VALUES (%s) RETURNING id", (id_teste,))
+    id_relatorio = cur.fetchone()[0]
+    return id_teste, id_relatorio
+
+
+def _finalizar_teste(conn, id_teste: str, id_relatorio: str, risco_geral: str) -> None:
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'"
-            )
-            colunas_por_tabela: dict[str, set[str]] = {}
-            for tabela, coluna in cur.fetchall():
-                colunas_por_tabela.setdefault(tabela, set()).add(coluna)
-
-            necessarias = {"limite_requisicoes", "numero_rotas_detectadas", "orcamento_por_rota"}
-            tabela_testes = next(
-                (t for t, cols in colunas_por_tabela.items() if necessarias.issubset(cols)), None
-            )
-            if not tabela_testes or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", tabela_testes):
-                return
-
-            coluna_url = next(iter({"url", "url_alvo"} & colunas_por_tabela[tabela_testes]), None)
-
-            campos = ["limite_requisicoes", "numero_rotas_detectadas", "orcamento_por_rota"]
-            valores = [limite_requisicoes, numero_rotas, orcamento_por_rota]
-            if coluna_url:
-                campos.append(coluna_url)
-                valores.append(url)
-
-            placeholders = ", ".join(["%s"] * len(valores))
-            cur.execute(
-                f"INSERT INTO {tabela_testes} ({', '.join(campos)}) VALUES ({placeholders})",
-                valores,
-            )
-            conn.commit()
-    except Exception as e:  # noqa: BLE001 - nunca deve derrubar o scan
-        print(f"[scan_runner] Não foi possível registrar orçamento do teste (rode a migração 003?): {e}")
+            cur.execute("UPDATE relatorios SET risco_geral = %s WHERE id = %s", (risco_geral, id_relatorio))
+            cur.execute("UPDATE testes SET status = %s WHERE id = %s", ("concluido", id_teste))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001 - nunca deve derrubar o retorno do scan
+        print(f"[scan_runner] Não foi possível finalizar teste/relatório no banco: {e}")
         conn.rollback()
+
+
+def _persistir_campo(cur, id_teste: str, input_original, embedding: list[float], classificacao: str) -> str:
+    """Registra o campo detectado em `componentes_web` (1 linha por campo,
+    não por ataque disparado nele) e devolve o id, usado para ligar cada
+    ataque ao campo via `ataques.id_componente`."""
+    conteudo_extraido = {
+        "html_name": input_original.html_name,
+        "html_id": input_original.html_id,
+        "type": input_original.type,
+        "parent_form_action": input_original.parent_form_action,
+        "parent_form_method": input_original.parent_form_method,
+    }
+    cur.execute(
+        """
+        INSERT INTO componentes_web (id_teste, classificacao_sugerida, embedding_semantico, conteudo_extraido)
+        VALUES (%s, %s, %s::vector, %s)
+        RETURNING id
+        """,
+        (id_teste, classificacao, _to_pgvector_literal(embedding), Json(conteudo_extraido)),
+    )
+    return cur.fetchone()[0]
+
+
+def _persistir_ataque(
+    cur, *, id_relatorio: str, id_componente: str, categoria_ia: str, payload_id: str | None,
+    payload_usado: str, metodo_http: str, parametros_query: dict | None, sucesso: bool,
+    status_code: int | None, mensagem_erro: str | None, tempo_resposta_ms: float | None,
+    risco: str, recompensa_rl: float, descricao_falha: str, sugestao_correcao: str,
+) -> None:
+    """Registra uma tentativa de ataque (1 payload disparado contra 1 campo)
+    na tabela `ataques` — é esse histórico real que o EfficacyModel (XGBoost)
+    usa pra aprender o que funciona em qual tipo de campo."""
+    cur.execute(
+        """
+        INSERT INTO ataques
+        (id_relatorio, id_componente, tipo_ataque, payload_id, payload_usado, metodo_http,
+         parametros_query, sucesso, status_code, mensagem_erro, tempo_resposta_ms, risco,
+         recompensa_rl, descricao_falha, sugestao_correcao)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            id_relatorio, id_componente, categoria_ia, payload_id, payload_usado, metodo_http,
+            Json(parametros_query) if parametros_query is not None else None,
+            sucesso, status_code, mensagem_erro, tempo_resposta_ms, risco,
+            recompensa_rl, descricao_falha, sugestao_correcao,
+        ),
+    )
 
 
 # Mapeia a classificação do FeedbackService para o nível de risco exibido no front.
@@ -371,12 +535,17 @@ def _kb_para_categoria(categoria_ia: str) -> dict:
 
 
 def _executar_sql(
-    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+    url: str, feedback: FeedbackService, contexto: dict | None = None,
+    limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO, conn=None,
+    efficacy_model: EfficacyModel | None = None, id_teste: str | None = None, id_relatorio: str | None = None,
 ) -> list[dict]:
     kb = _BASE_CONHECIMENTO["sql"]
 
     if contexto:
-        smarts = _atacar_campos_multi(url, contexto, feedback, BUCKET_SQL, limite_requisicoes)
+        smarts = _atacar_campos_multi(
+            url, contexto, feedback, BUCKET_SQL, limite_requisicoes,
+            conn=conn, efficacy_model=efficacy_model, id_teste=id_teste, id_relatorio=id_relatorio,
+        )
         if smarts:
             return [_montar_vuln_ia("sql", _kb_para_categoria(s["categoria_ia"]), s) for s in smarts]
 
@@ -395,12 +564,17 @@ def _executar_sql(
 
 
 def _executar_xss(
-    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+    url: str, feedback: FeedbackService, contexto: dict | None = None,
+    limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO, conn=None,
+    efficacy_model: EfficacyModel | None = None, id_teste: str | None = None, id_relatorio: str | None = None,
 ) -> list[dict]:
     kb = _BASE_CONHECIMENTO["xss"]
 
     if contexto:
-        smarts = _atacar_campos_multi(url, contexto, feedback, BUCKET_XSS, limite_requisicoes)
+        smarts = _atacar_campos_multi(
+            url, contexto, feedback, BUCKET_XSS, limite_requisicoes,
+            conn=conn, efficacy_model=efficacy_model, id_teste=id_teste, id_relatorio=id_relatorio,
+        )
         if smarts:
             return [_montar_vuln_ia("xss", _kb_para_categoria(s["categoria_ia"]), s) for s in smarts]
 
@@ -428,7 +602,9 @@ def _executar_xss(
 
 
 def _executar_header(
-    url: str, feedback: FeedbackService, contexto: dict | None = None, limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO
+    url: str, feedback: FeedbackService, contexto: dict | None = None,
+    limite_requisicoes: int = _LIMITE_REQUISICOES_PADRAO, conn=None,
+    efficacy_model: EfficacyModel | None = None, id_teste: str | None = None, id_relatorio: str | None = None,
 ) -> list[dict]:
     kb = _BASE_CONHECIMENTO["header"]
     try:
@@ -604,10 +780,23 @@ def executar_scan(
     conn = _abrir_conexao_db()
     feedback = FeedbackService(db_connection=conn)
     contexto = _crawlear_contexto(url) if conn else None
+
+    efficacy_model = None
+    id_teste = None
+    id_relatorio = None
     if conn:
         numero_rotas = len(contexto["grupos"]) if contexto else 1
         orcamento_rota = _orcamento_por_rota(numero_rotas, limite_requisicoes)
-        _persistir_orcamento_teste(conn, url, limite_requisicoes, numero_rotas, orcamento_rota)
+        efficacy_model = _get_efficacy_model(conn)
+        try:
+            with conn.cursor() as cur:
+                id_teste, id_relatorio = _criar_teste_e_relatorio(
+                    cur, url, limite_requisicoes, numero_rotas, orcamento_rota
+                )
+            conn.commit()
+        except Exception as e:  # noqa: BLE001 - sem teste/relatorio, só não persiste histórico
+            print(f"[scan_runner] Não foi possível registrar teste/relatório no banco: {e}")
+            conn.rollback()
     _set("conexao", "done")
 
     # "sql" e "xss" são os únicos motores que gastam do orçamento de
@@ -627,9 +816,16 @@ def executar_scan(
         for chave in motores:
             _set(chave, "running")
             limite_motor = limite_por_motor if chave in ("sql", "xss") else limite_requisicoes
-            vulnerabilidades.extend(_MOTORES[chave](url, feedback, contexto, limite_motor))
+            vulnerabilidades.extend(
+                _MOTORES[chave](
+                    url, feedback, contexto, limite_motor,
+                    conn=conn, efficacy_model=efficacy_model, id_teste=id_teste, id_relatorio=id_relatorio,
+                )
+            )
             _set(chave, "done")
     finally:
+        if conn and id_teste and id_relatorio:
+            _finalizar_teste(conn, id_teste, id_relatorio, _resumir(url, vulnerabilidades)["nivel"])
         if conn:
             conn.close()
 
@@ -667,8 +863,9 @@ def _resumir(url: str, vulns: list[dict]) -> dict:
 
 
 def _acuracia_bars(vulns: list[dict]) -> list[int]:
-    # Placeholder visual derivado dos riscos encontrados (o modelo de eficácia
-    # real — XGBoost — entra numa etapa posterior).
+    # Placeholder visual derivado dos riscos encontrados. O EfficacyModel
+    # (XGBoost) já decide quais payloads disparar em `_atacar_campos_multi`;
+    # estas barras são só um resumo visual pro front, não vêm dele.
     peso = {"Crítico": 95, "Alto": 80, "Médio": 60, "Baixo": 40}
     base = [peso.get(v["risco"], 40) for v in vulns] or [50]
     barras = []
