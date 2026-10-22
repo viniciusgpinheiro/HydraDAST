@@ -113,6 +113,10 @@ class EfficacyModel:
                 linhas = cur.fetchall()
         except Exception as e:  # noqa: BLE001 - treino é best-effort, nunca derruba o scan
             print(f"[EfficacyModel] Não foi possível ler o histórico de ataques: {e}")
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001 - conexão pode já estar fechada/inválida
+                pass
             return False
 
         if len(linhas) < minimo_exemplos:

@@ -80,6 +80,10 @@ class FeedbackService:
                 linhas = cursor.fetchall()
         except Exception as e:
             logger.error(f"Erro na classificação por IA via pgvector: {e}")
+            try:
+                self.conn.rollback()
+            except Exception:  # noqa: BLE001 - conexão pode já estar fechada/inválida
+                pass
             return []
 
         resultados = []
