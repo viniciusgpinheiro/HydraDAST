@@ -135,20 +135,35 @@ class FeedbackService:
         """Retorna o score de Reinforcement Learning baseado no resultado obtido."""
         return self._TABELA_RECOMPENSAS.get(classificacao_resultado, -2)
 
-    def analisar_resposta(self, status_code: int, response_body: str, payload: Optional[str] = None) -> dict:
+    def analisar_resposta(
+        self, status_code: int, response_body: str, payload: Optional[str] = None,
+        corpo_base: Optional[str] = None,
+    ) -> dict:
         """
         Analisa a resposta HTTP recebida após o envio de um payload e classifica
         o resultado (vulnerabilidade confirmada, bypass, bloqueio de WAF, etc.),
         já retornando a recompensa de RL correspondente.
-        """
+
+        `corpo_base`, se informado, é a resposta de uma requisição de controle
+        pra mesma rota (valores normais, sem payload nenhum) — usado pra
+        diferenciar um SUCESSO_BYPASS real de uma palavra-chave (admin,
+        dashboard, logout, welcome) que já aparece em QUALQUER resposta
+        daquela rota (ex.: um link fixo de menu que aparece até na página de
+        login com erro). Sem `corpo_base`, mantém o comportamento anterior
+        (checa só a presença da palavra, sem diferencial)."""
         response_body = response_body or ""
         corpo_lower = response_body.lower()
+
+        padroes_na_resposta = {p for p in self._PADROES_SUCESSO_BYPASS if p in corpo_lower}
+        if corpo_base is not None:
+            padroes_no_baseline = {p for p in self._PADROES_SUCESSO_BYPASS if p in corpo_base.lower()}
+            padroes_na_resposta -= padroes_no_baseline
 
         if status_code in self._STATUS_BLOQUEIO_WAF:
             classificacao = "BLOQUEADO_PELO_WAF"
         elif self._PADROES_VULNERABILIDADE.search(response_body):
             classificacao = "VULNERABILIDADE_CONFIRMADA"
-        elif any(padrao in corpo_lower for padrao in self._PADROES_SUCESSO_BYPASS):
+        elif padroes_na_resposta:
             classificacao = "SUCESSO_BYPASS"
         elif 500 <= status_code < 600:
             classificacao = "POTENCIAL_ERRO_INTERNO"

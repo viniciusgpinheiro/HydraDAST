@@ -128,6 +128,31 @@ def _montar_corpo_formulario(campo, campos_do_form, payload_escolhido: str) -> d
     return corpo
 
 
+def _requisitar_baseline(alvo: str, metodo_form: str, campos_do_form) -> str:
+    """1 requisição de controle por rota, com valores normais em todos os
+    campos (sem payload nenhum) — vira o `corpo_base` que `analisar_resposta`
+    usa pra não confundir uma palavra-chave de bypass que já aparece em
+    QUALQUER resposta daquela rota (ex.: um link fixo de menu "Dashboard"/
+    "Logout" presente até na página de erro de login) com um bypass real.
+    Falha silenciosamente (volta "") se a requisição de controle der erro —
+    nesse caso `analisar_resposta` simplesmente não tem baseline pra comparar."""
+    corpo = {
+        c.html_name: (c.value or "teste123")
+        for c in campos_do_form
+        if c.html_name and (c.type or "").lower() not in _TIPOS_NAO_TESTAVEIS
+    }
+    if not corpo:
+        return ""
+    injetar_em = "query" if metodo_form == "GET" else "body"
+    try:
+        resposta = _requisicao_generica(corpo, alvo, metodo_form, injetar_em=injetar_em)
+    except Exception:  # noqa: BLE001 - baseline é best-effort
+        return ""
+    if resposta.get("erro"):
+        return ""
+    return resposta.get("corpo", "") or ""
+
+
 def _orcamento_por_rota(numero_rotas: int, limite_requisicoes: int) -> int:
     """n = limite de requisições do teste dividido pelo número de rotas
     (item 2 do pedido). Esse orçamento é depois repartido entre os campos de
@@ -187,6 +212,7 @@ def _atacar_campos_multi(
             metodo_form = "POST"
         acao_form = campos_testaveis[0].parent_form_action
         alvo = urljoin(url_base, acao_form) if acao_form else url_base
+        corpo_base = _requisitar_baseline(alvo, metodo_form, campos_testaveis)
 
         for campo in campos_testaveis:
             vetor = emb_por_campo.get(id(campo))
@@ -272,7 +298,7 @@ def _atacar_campos_multi(
                     classificacao = "VULNERABILIDADE_CONFIRMADA"
                 else:
                     classificacao = feedback.analisar_resposta(
-                        status_code, corpo_resposta, payload=payload_usado
+                        status_code, corpo_resposta, payload=payload_usado, corpo_base=corpo_base
                     )["classificacao"]
 
                 recompensa = feedback.calcular_recompensa(classificacao)
