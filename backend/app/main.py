@@ -154,7 +154,7 @@ def main() -> None:
     if not conn_string:
         raise RuntimeError("Defina DATABASE_URL no .env")
 
-    url_vulneravel = "http://127.0.0.1:5227"
+    url_vulneravel = "https://the-internet.herokuapp.com/login"
 
     resultado = asyncio.run(run_smart_crawler(url_vulneravel))
     nlp = NLPService()
